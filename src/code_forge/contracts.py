@@ -58,6 +58,8 @@ class EventType(StrEnum):
     TOOL_FINISHED = "tool.finished"
     TOOL_UNKNOWN = "tool.unknown"
     SKILL_ACTIVATED = "skill.activated"
+    SKILL_STARTED = "skill.started"
+    SKILL_FINISHED = "skill.finished"
     WORKSPACE_COMMITTED = "workspace.committed"
 
 

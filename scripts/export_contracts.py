@@ -297,6 +297,19 @@ event_payloads = {
     "skill.activated": obj(
         {"name": string(), "version": string(), "digest": string()}, ["name", "version", "digest"]
     ),
+    "skill.started": obj(
+        {"name": string(), "version": string(), "operation_id": uuid},
+        ["name", "version", "operation_id"],
+    ),
+    "skill.finished": obj(
+        {
+            "name": string(),
+            "version": string(),
+            "operation_id": uuid,
+            "status": string(enum=["SUCCEEDED", "FAILED", "CANCELLED"]),
+        },
+        ["name", "version", "operation_id", "status"],
+    ),
     "workspace.committed": obj(
         {"revision_id": uuid, "changed_paths": array(string())}, ["revision_id", "changed_paths"]
     ),

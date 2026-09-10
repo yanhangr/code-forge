@@ -1782,6 +1782,8 @@
           "tool.finished",
           "tool.unknown",
           "skill.activated",
+          "skill.started",
+          "skill.finished",
           "workspace.committed"
         ]
       },
@@ -2288,6 +2290,12 @@
             "$ref": "#/components/schemas/Event_skill_activated"
           },
           {
+            "$ref": "#/components/schemas/Event_skill_started"
+          },
+          {
+            "$ref": "#/components/schemas/Event_skill_finished"
+          },
+          {
             "$ref": "#/components/schemas/Event_workspace_committed"
           }
         ],
@@ -2309,6 +2317,8 @@
             "tool.finished": "#/components/schemas/Event_tool_finished",
             "tool.unknown": "#/components/schemas/Event_tool_unknown",
             "skill.activated": "#/components/schemas/Event_skill_activated",
+            "skill.started": "#/components/schemas/Event_skill_started",
+            "skill.finished": "#/components/schemas/Event_skill_finished",
             "workspace.committed": "#/components/schemas/Event_workspace_committed"
           }
         }
@@ -3496,6 +3506,143 @@
               "name",
               "version",
               "digest"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_skill_started": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "skill.started"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "operation_id"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_skill_finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "skill.finished"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "SUCCEEDED",
+                  "FAILED",
+                  "CANCELLED"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "operation_id",
+              "status"
             ]
           }
         },
