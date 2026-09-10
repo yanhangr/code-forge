@@ -1,0 +1,3708 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Code Forge Runtime Integration Contract",
+    "version": "0.2.0",
+    "description": "Architecture contract; endpoints are not implemented yet. Trusted local verification uses default permissions and local subprocess execution."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8000"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "post": {
+        "operationId": "createSession",
+        "parameters": [
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCreate"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listSessions",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}": {
+      "get": {
+        "operationId": "getSession",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/runs": {
+      "post": {
+        "operationId": "createRun",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCreate"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listRuns",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}": {
+      "get": {
+        "operationId": "getRun",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancelRun",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/responses": {
+      "post": {
+        "operationId": "respondToRun",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResponseCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/snapshot": {
+      "get": {
+        "operationId": "getRunSnapshot",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSnapshotView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/event-history": {
+      "get": {
+        "operationId": "listRunEvents",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "after_seq",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 200
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/events": {
+      "get": {
+        "operationId": "streamRunEvents",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "after_seq",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE id is run_id:seq; data is Event JSON. Replay then live events. Disconnect does not cancel Run.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/skills": {
+      "get": {
+        "operationId": "listSkills",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/files": {
+      "get": {
+        "operationId": "listWorkspaceFiles",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/files/content": {
+      "get": {
+        "operationId": "readWorkspaceFile",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "required": true
+          },
+          {
+            "name": "X-Forge-Scope",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "default": "default"
+            },
+            "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileContent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Capability denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Resource limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "RunStatus": {
+        "type": "string",
+        "enum": [
+          "QUEUED",
+          "RUNNING",
+          "WAITING_USER",
+          "WAITING_EXTERNAL",
+          "RECOVERING",
+          "CANCELLING",
+          "SUCCEEDED",
+          "FAILED",
+          "CANCELLED",
+          "TIMED_OUT"
+        ]
+      },
+      "TaskOutcome": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "partial",
+          "blocked"
+        ]
+      },
+      "ToolStatus": {
+        "type": "string",
+        "enum": [
+          "PREPARED",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "CANCELLED",
+          "UNKNOWN"
+        ]
+      },
+      "EventType": {
+        "type": "string",
+        "enum": [
+          "run.accepted",
+          "run.started",
+          "run.waiting",
+          "run.resumed",
+          "run.recovering",
+          "run.cancel_requested",
+          "run.finished",
+          "message.delta",
+          "message.completed",
+          "tool.prepared",
+          "tool.started",
+          "tool.output",
+          "tool.finished",
+          "tool.unknown",
+          "skill.activated",
+          "workspace.committed"
+        ]
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "INVALID_REQUEST",
+          "SESSION_NOT_FOUND",
+          "RUN_NOT_FOUND",
+          "IDEMPOTENCY_CONFLICT",
+          "STATE_CONFLICT",
+          "INVALID_TRANSITION",
+          "INVALID_EVENT_CURSOR",
+          "SKILL_NOT_FOUND",
+          "SKILL_INCOMPATIBLE",
+          "MODEL_NOT_CONFIGURED",
+          "EXECUTION_FAILED",
+          "EXECUTION_UNKNOWN",
+          "CAPABILITY_DENIED",
+          "RESOURCE_LIMIT",
+          "DEPENDENCY_UNAVAILABLE"
+        ]
+      },
+      "ExecutionContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "default": "default"
+          },
+          "actor_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": []
+      },
+      "SkillBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "SkillRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "bundle_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "digest",
+          "bundle_ref"
+        ]
+      },
+      "SkillInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "digest",
+          "description"
+        ]
+      },
+      "SessionCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "default": "New session",
+            "maxLength": 200
+          },
+          "external_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context": {
+            "$ref": "#/components/schemas/ExecutionContext"
+          }
+        },
+        "required": []
+      },
+      "Session": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "external_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "created_by": {
+            "type": "string",
+            "maxLength": 200,
+            "readOnly": true
+          },
+          "date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "updated_by": {
+            "type": "string",
+            "maxLength": 200,
+            "readOnly": true
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "external_ref",
+          "workspace_id",
+          "date_created",
+          "created_by",
+          "date_updated",
+          "updated_by"
+        ]
+      },
+      "RunCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          },
+          "agent_ref": {
+            "type": "string",
+            "default": "general@1"
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillBinding"
+            },
+            "maxItems": 30,
+            "default": []
+          },
+          "context": {
+            "$ref": "#/components/schemas/ExecutionContext"
+          }
+        },
+        "required": [
+          "input"
+        ]
+      },
+      "AcceptedRun": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "status",
+          "state_version",
+          "reused"
+        ]
+      },
+      "RunSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "agent_digest": {
+            "type": "string"
+          },
+          "runtime_ref": {
+            "type": "string"
+          },
+          "model_profile_ref": {
+            "type": "string"
+          },
+          "execution_profile_ref": {
+            "type": "string"
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRef"
+            }
+          },
+          "tool_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "agent_digest",
+          "runtime_ref",
+          "model_profile_ref",
+          "execution_profile_ref",
+          "skills",
+          "tool_refs"
+        ]
+      },
+      "Run": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_seq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "input": {
+            "type": "string"
+          },
+          "agent_ref": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "task_outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/RunSnapshot"
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "created_by": {
+            "type": "string",
+            "maxLength": 200,
+            "readOnly": true
+          },
+          "updated_by": {
+            "type": "string",
+            "maxLength": 200,
+            "readOnly": true
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "run_seq",
+          "input",
+          "agent_ref",
+          "status",
+          "state_version",
+          "task_outcome",
+          "wait_reason",
+          "output",
+          "error",
+          "snapshot",
+          "date_created",
+          "date_updated",
+          "created_by",
+          "updated_by"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "request_id"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Error"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "Event": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Event_run_accepted"
+          },
+          {
+            "$ref": "#/components/schemas/Event_run_started"
+          },
+          {
+            "$ref": "#/components/schemas/Event_run_waiting"
+          },
+          {
+            "$ref": "#/components/schemas/Event_run_resumed"
+          },
+          {
+            "$ref": "#/components/schemas/Event_run_recovering"
+          },
+          {
+            "$ref": "#/components/schemas/Event_run_cancel_requested"
+          },
+          {
+            "$ref": "#/components/schemas/Event_run_finished"
+          },
+          {
+            "$ref": "#/components/schemas/Event_message_delta"
+          },
+          {
+            "$ref": "#/components/schemas/Event_message_completed"
+          },
+          {
+            "$ref": "#/components/schemas/Event_tool_prepared"
+          },
+          {
+            "$ref": "#/components/schemas/Event_tool_started"
+          },
+          {
+            "$ref": "#/components/schemas/Event_tool_output"
+          },
+          {
+            "$ref": "#/components/schemas/Event_tool_finished"
+          },
+          {
+            "$ref": "#/components/schemas/Event_tool_unknown"
+          },
+          {
+            "$ref": "#/components/schemas/Event_skill_activated"
+          },
+          {
+            "$ref": "#/components/schemas/Event_workspace_committed"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "run.accepted": "#/components/schemas/Event_run_accepted",
+            "run.started": "#/components/schemas/Event_run_started",
+            "run.waiting": "#/components/schemas/Event_run_waiting",
+            "run.resumed": "#/components/schemas/Event_run_resumed",
+            "run.recovering": "#/components/schemas/Event_run_recovering",
+            "run.cancel_requested": "#/components/schemas/Event_run_cancel_requested",
+            "run.finished": "#/components/schemas/Event_run_finished",
+            "message.delta": "#/components/schemas/Event_message_delta",
+            "message.completed": "#/components/schemas/Event_message_completed",
+            "tool.prepared": "#/components/schemas/Event_tool_prepared",
+            "tool.started": "#/components/schemas/Event_tool_started",
+            "tool.output": "#/components/schemas/Event_tool_output",
+            "tool.finished": "#/components/schemas/Event_tool_finished",
+            "tool.unknown": "#/components/schemas/Event_tool_unknown",
+            "skill.activated": "#/components/schemas/Event_skill_activated",
+            "workspace.committed": "#/components/schemas/Event_workspace_committed"
+          }
+        }
+      },
+      "PendingResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "clarification",
+              "execution_reconciliation",
+              "approval"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "resolved": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "prompt",
+          "resolved"
+        ]
+      },
+      "ResponseCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pending_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "response_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "expected_state_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000
+          }
+        },
+        "required": [
+          "pending_id",
+          "response_key",
+          "expected_state_version",
+          "text"
+        ]
+      },
+      "RunSnapshotView": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/Run"
+          },
+          "event_cursor": {
+            "type": "string"
+          },
+          "pending_responses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingResponse"
+            }
+          }
+        },
+        "required": [
+          "run",
+          "event_cursor",
+          "pending_responses"
+        ]
+      },
+      "FileInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "size_bytes",
+          "digest"
+        ]
+      },
+      "FileContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "content",
+          "digest",
+          "truncated"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ]
+          },
+          "api_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "model_configured": {
+            "type": "boolean"
+          },
+          "execution_backend": {
+            "type": "string",
+            "enum": [
+              "local_process"
+            ]
+          },
+          "permission_mode": {
+            "type": "string",
+            "enum": [
+              "default_allow"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "api_version",
+          "model_configured",
+          "execution_backend",
+          "permission_mode"
+        ]
+      },
+      "AuditFields": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "created_by": {
+            "type": "string",
+            "maxLength": 200,
+            "readOnly": true
+          },
+          "date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "updated_by": {
+            "type": "string",
+            "maxLength": 200,
+            "readOnly": true
+          }
+        },
+        "required": [
+          "date_created",
+          "created_by",
+          "date_updated",
+          "updated_by"
+        ]
+      },
+      "Event_run_accepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.accepted"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "QUEUED"
+                ]
+              },
+              "snapshot": {
+                "$ref": "#/components/schemas/RunSnapshot"
+              }
+            },
+            "required": [
+              "status",
+              "snapshot"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_run_started": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.started"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "attempt_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "attempt_id"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_run_waiting": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.waiting"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "WAITING_USER",
+                  "WAITING_EXTERNAL"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "pending_response": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PendingResponse"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "operation_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "reason",
+              "pending_response",
+              "operation_id"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_run_resumed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.resumed"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "QUEUED"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_run_recovering": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.recovering"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_run_cancel_requested": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.cancel_requested"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CANCELLING"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_run_finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.finished"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "SUCCEEDED",
+                  "FAILED",
+                  "CANCELLED",
+                  "TIMED_OUT"
+                ]
+              },
+              "task_outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TaskOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "task_outcome",
+              "output",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_message_delta": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "message.delta"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "text"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_message_completed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "message.completed"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "text"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_tool_prepared": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool.prepared"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "tool_ref": {
+                "type": "string"
+              },
+              "input_summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id",
+              "tool_ref",
+              "input_summary"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_tool_started": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool.started"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "tool_ref": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id",
+              "tool_ref"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_tool_output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool.output"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "stream": {
+                "type": "string",
+                "enum": [
+                  "stdout",
+                  "stderr"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "operation_id",
+              "stream",
+              "text",
+              "truncated"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_tool_finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool.finished"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "SUCCEEDED",
+                  "FAILED",
+                  "CANCELLED"
+                ]
+              },
+              "result_ref": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "operation_id",
+              "status",
+              "result_ref",
+              "error"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_tool_unknown": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool.unknown"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operation_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id",
+              "reason"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_skill_activated": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "skill.activated"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "digest"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_workspace_committed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "workspace.committed"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "revision_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "changed_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "revision_id",
+              "changed_paths"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "seq",
+          "schema_version",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "SessionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "RunPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Run"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "SkillPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillInfo"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "FilePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileInfo"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "EventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "next_after_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_after_seq"
+        ]
+      }
+    }
+  }
+}

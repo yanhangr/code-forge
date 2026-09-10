@@ -1,0 +1,43 @@
+{
+  "QUEUED": [
+    "CANCELLING",
+    "FAILED",
+    "RUNNING",
+    "TIMED_OUT"
+  ],
+  "RUNNING": [
+    "CANCELLING",
+    "FAILED",
+    "RECOVERING",
+    "SUCCEEDED",
+    "TIMED_OUT",
+    "WAITING_EXTERNAL",
+    "WAITING_USER"
+  ],
+  "WAITING_USER": [
+    "CANCELLING",
+    "FAILED",
+    "QUEUED",
+    "TIMED_OUT"
+  ],
+  "WAITING_EXTERNAL": [
+    "CANCELLING",
+    "FAILED",
+    "QUEUED",
+    "TIMED_OUT"
+  ],
+  "RECOVERING": [
+    "CANCELLING",
+    "FAILED",
+    "QUEUED",
+    "TIMED_OUT",
+    "WAITING_USER"
+  ],
+  "CANCELLING": [
+    "CANCELLED"
+  ],
+  "SUCCEEDED": [],
+  "FAILED": [],
+  "CANCELLED": [],
+  "TIMED_OUT": []
+}

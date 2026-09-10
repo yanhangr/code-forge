@@ -1,0 +1,1079 @@
+{
+  "version": "0.4",
+  "cases": [
+    {
+      "case_id": "TC-B01",
+      "branch_id": "B01",
+      "flow_id": "F01",
+      "title": "校验拒绝",
+      "level": "L1",
+      "given": [
+        "已有默认作用域；准备空输入、超长输入及缺少幂等键三组请求"
+      ],
+      "when": [
+        "逐组提交 createRun"
+      ],
+      "then": [
+        "400/422 INVALID_REQUEST",
+        "无新 Run/快照/事件",
+        "不调用模型"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b01",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B02",
+      "branch_id": "B02",
+      "flow_id": "F01",
+      "title": "授权拒绝",
+      "level": "L0+L1",
+      "given": [
+        "AuthorizationPort 替换为拒绝实现；Session 存在"
+      ],
+      "when": [
+        "提交有效任务"
+      ],
+      "then": [
+        "CAPABILITY_DENIED",
+        "resolver/repository.accept_once 均未调用",
+        "状态未改变"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b02",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::AcceptanceTests.test_authorization_precedes_resolution"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B03",
+      "branch_id": "B03",
+      "flow_id": "F01",
+      "title": "会话或作用域不匹配",
+      "level": "L1",
+      "given": [
+        "Session 仅属于 scope-a；请求使用不存在 ID 或 scope-b"
+      ],
+      "when": [
+        "提交或读取任务"
+      ],
+      "then": [
+        "SESSION_NOT_FOUND",
+        "不返回其他 scope 数据",
+        "不接受 Run"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b03",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B04",
+      "branch_id": "B04",
+      "flow_id": "F01",
+      "title": "幂等复用旧任务",
+      "level": "L0+L1",
+      "given": [
+        "同键请求已接受且 Skill 源目录随后更新"
+      ],
+      "when": [
+        "用相同规范化请求和幂等键重试"
+      ],
+      "then": [
+        "返回原 Run 且 reused=true",
+        "不再次解析 Skill",
+        "审计字段/事件/队列序号不增加"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b04",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::AcceptanceTests.test_retry_does_not_resolve_new_skill"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B05",
+      "branch_id": "B05",
+      "flow_id": "F01",
+      "title": "幂等内容冲突",
+      "level": "L0+L1",
+      "given": [
+        "已接受一条含代码空白/Skill 顺序的请求"
+      ],
+      "when": [
+        "复用原键但改 input 或 Skill 顺序"
+      ],
+      "then": [
+        "409 IDEMPOTENCY_CONFLICT",
+        "原输入/快照保持不变"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b05",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::AcceptanceTests.test_key_conflict_and_input_whitespace_preserved"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B06",
+      "branch_id": "B06",
+      "flow_id": "F01",
+      "title": "快照解析失败",
+      "level": "L1",
+      "given": [
+        "分别准备缺失包、非法路径、版本不兼容、存储不可用四组输入"
+      ],
+      "when": [
+        "提交指定 Skill 的任务"
+      ],
+      "then": [
+        "SKILL_NOT_FOUND/SKILL_INCOMPATIBLE/DEPENDENCY_UNAVAILABLE",
+        "无 202",
+        "不引用半写入包"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b06",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B07",
+      "branch_id": "B07",
+      "flow_id": "F01",
+      "title": "持久接受与并发重复",
+      "level": "L1",
+      "given": [
+        "真实 PG；八个相同请求同时提交"
+      ],
+      "when": [
+        "并发接受后关闭 API 进程并重启查询"
+      ],
+      "then": [
+        "仅一个 Run/接受事件和一个 run_seq",
+        "四个审计字段齐全",
+        "202 后数据可读"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b07",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::AcceptanceTests.test_concurrent_duplicate_acceptance"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B08",
+      "branch_id": "B08",
+      "flow_id": "F01",
+      "title": "队首领取执行权",
+      "level": "L1",
+      "given": [
+        "Session 无主任务，存在两条顺序 Run；两个调度器同时领取"
+      ],
+      "when": [
+        "执行领取事务"
+      ],
+      "then": [
+        "只有队首成为 RUNNING",
+        "active_run_id/active_attempt_id/epoch 一致",
+        "一个合法执行者"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b08",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B09",
+      "branch_id": "B09",
+      "flow_id": "F01",
+      "title": "等待或资源占用时排队",
+      "level": "L1",
+      "given": [
+        "参数化主 Run 为 RUNNING/WAITING_USER/WAITING_EXTERNAL，另设资源不足组"
+      ],
+      "when": [
+        "尝试领取后序 Run"
+      ],
+      "then": [
+        "后序仍 QUEUED",
+        "不调用模型、不重复建立 Attempt",
+        "资源恢复才重新判断"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b09",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B10",
+      "branch_id": "B10",
+      "flow_id": "F01",
+      "title": "排队期限和执行前失效",
+      "level": "L1",
+      "given": [
+        "两组队首：期限已过；固定配置永久不可用"
+      ],
+      "when": [
+        "扫描并尝试执行"
+      ],
+      "then": [
+        "分别 TIMED_OUT/FAILED",
+        "输出明确原因和终态事件",
+        "清理队列归属",
+        "无工具副作用"
+      ],
+      "planned_test": "tests/integration/test_flow_01.py::test_b10",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B11",
+      "branch_id": "B11",
+      "flow_id": "F02",
+      "title": "新 Run 组装 Agent 图",
+      "level": "L2",
+      "given": [
+        "可运行 Run，有 AgentSpec、工具与手工 Skill 快照"
+      ],
+      "when": [
+        "通过真实 AgentFactory/LG 启动一轮"
+      ],
+      "then": [
+        "按锁定配置组装一次",
+        "LG 执行模型节点",
+        "只读取当前候选摘要",
+        "不另建竞争模型循环"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b11",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B12",
+      "branch_id": "B12",
+      "flow_id": "F02",
+      "title": "原 Run checkpoint 恢复",
+      "level": "L2",
+      "given": [
+        "图已持久一个工具结果，Run 因可恢复原因暂停"
+      ],
+      "when": [
+        "恢复原 Run 与 checkpoint"
+      ],
+      "then": [
+        "input 不追加两次",
+        "沿原快照/调用槽继续",
+        "已完成工具不重跑"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b12",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B13",
+      "branch_id": "B13",
+      "flow_id": "F02",
+      "title": "运行图或模型配置不兼容",
+      "level": "L2",
+      "given": [
+        "固定 runtime_ref 无兼容实例或模型 profile 无效"
+      ],
+      "when": [
+        "尝试组装/恢复"
+      ],
+      "then": [
+        "不以新图强行读取旧状态",
+        "有界等待或 FAILED",
+        "不静默用假模型/新 Skill"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b13",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B14",
+      "branch_id": "B14",
+      "flow_id": "F02",
+      "title": "纯对话直接完成",
+      "level": "L2+L3",
+      "given": [
+        "任务无需工具；模型能够直接回答"
+      ],
+      "when": [
+        "提交普通问题并观察完整图事件"
+      ],
+      "then": [
+        "无计划/Python/Skill 的强制调用",
+        "message.completed 与 run.finished 正常提交"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b14",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B15",
+      "branch_id": "B15",
+      "flow_id": "F02",
+      "title": "计划更新与实际执行分离",
+      "level": "L2+L3",
+      "given": [
+        "多步骤 Coding 任务；计划中含实现和测试"
+      ],
+      "when": [
+        "模型更新 todo 后继续执行"
+      ],
+      "then": [
+        "计划变化不等于任务终态",
+        "没有测试证据不能声称已测",
+        "进入工具反馈循环"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b15",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B16",
+      "branch_id": "B16",
+      "flow_id": "F02",
+      "title": "Skill 激活与非法候选",
+      "level": "L2",
+      "given": [
+        "一合法锁定包，另有未授权候选及 digest 被改的快照"
+      ],
+      "when": [
+        "分别请求加载合法包/快照外包/损坏包"
+      ],
+      "then": [
+        "合法包按需加载并发 skill.activated",
+        "其他明确拒绝",
+        "不回读新源包绕过校验"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b16",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B17",
+      "branch_id": "B17",
+      "flow_id": "F02",
+      "title": "信息不足时挂起",
+      "level": "L2+L3",
+      "given": [
+        "任务缺少关键参数；默认授权不要求审批"
+      ],
+      "when": [
+        "模型请求澄清必要信息"
+      ],
+      "then": [
+        "保存 clarification pending",
+        "WAITING_USER 与 run.waiting",
+        "LG interrupt 前无重复副作用"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b17",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B18",
+      "branch_id": "B18",
+      "flow_id": "F02",
+      "title": "模型请求工具先持久化",
+      "level": "L2",
+      "given": [
+        "模型返回一次写文件或 Python 调用"
+      ],
+      "when": [
+        "在模型结果落盘前后设置故障点"
+      ],
+      "then": [
+        "调用列表/逻辑槽持久之前不派发",
+        "PREPARED 在执行前存在",
+        "无第二套 LLM loop"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b18",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B19",
+      "branch_id": "B19",
+      "flow_id": "F02",
+      "title": "只读子任务与失败合并",
+      "level": "L2",
+      "given": [
+        "主任务配置 Explore/Review、禁止递归并设置父预算"
+      ],
+      "when": [
+        "正常完成一组，另组子任务超时/父取消"
+      ],
+      "then": [
+        "子图独立上下文、不能写或递归",
+        "结果带来源",
+        "失败/取消可见且费用归父任务"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b19",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B20",
+      "branch_id": "B20",
+      "flow_id": "F02",
+      "title": "上下文压缩成功与失败",
+      "level": "L2",
+      "given": [
+        "长工具日志逼近上下文预算；另组压缩调用失败"
+      ],
+      "when": [
+        "继续 Agent 模型循环"
+      ],
+      "then": [
+        "成功保留目标/来源/待决/Skill",
+        "失败保留旧有效上下文并有界处理",
+        "不清空后继续写"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b20",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B21",
+      "branch_id": "B21",
+      "flow_id": "F02",
+      "title": "模型限流与重试耗尽",
+      "level": "L2",
+      "given": [
+        "注入 429/临时超时后恢复及持续失败两组"
+      ],
+      "when": [
+        "让 LG 模型节点请求模型"
+      ],
+      "then": [
+        "仅重试当前模型请求且退避有上限",
+        "不重复工具",
+        "耗尽 FAILED 且有明确错误"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b21",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B22",
+      "branch_id": "B22",
+      "flow_id": "F02",
+      "title": "步数预算到达",
+      "level": "L2",
+      "given": [
+        "任务持续重复调用工具，已接近步数上限"
+      ],
+      "when": [
+        "继续循环至预算门"
+      ],
+      "then": [
+        "不派发超预算操作",
+        "partial/blocked 说明未完成项",
+        "不无限压缩或 spawn 续命"
+      ],
+      "planned_test": "tests/integration/test_flow_02.py::test_b22",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B23",
+      "branch_id": "B23",
+      "flow_id": "F03",
+      "title": "工具输入或能力拒绝",
+      "level": "L1+L2",
+      "given": [
+        "工具名不存在、参数错或能力被拒绝三组"
+      ],
+      "when": [
+        "通过 ToolRouter 请求操作"
+      ],
+      "then": [
+        "结构化错误供 DA 重新规划",
+        "不创建成功结果、不执行进程",
+        "无宿主备用通道"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b23",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B24",
+      "branch_id": "B24",
+      "flow_id": "F03",
+      "title": "已存在操作查回",
+      "level": "L1+L2",
+      "given": [
+        "同逻辑槽对应 SUCCEEDED、RUNNING、UNKNOWN 三组账本"
+      ],
+      "when": [
+        "恢复工具调用"
+      ],
+      "then": [
+        "成功复用结果",
+        "运行中附着原句柄",
+        "UNKNOWN 进入核验",
+        "不再次派发"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b24",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B25",
+      "branch_id": "B25",
+      "flow_id": "F03",
+      "title": "同调用槽参数冲突",
+      "level": "L1",
+      "given": [
+        "已有 PREPARED 操作及 params_digest"
+      ],
+      "when": [
+        "使用相同逻辑槽但不同命令参数提交"
+      ],
+      "then": [
+        "STATE_CONFLICT",
+        "原操作/摘要不变",
+        "不以覆盖输入方式执行新效果"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b25",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B26",
+      "branch_id": "B26",
+      "flow_id": "F03",
+      "title": "Python 正常执行并落盘",
+      "level": "L1+L3",
+      "given": [
+        "本机 LocalProcessBackend 可用；任务计算平方和并写结果文件"
+      ],
+      "when": [
+        "真实运行 Python，读取 stdout/退出码/文件并返回 Agent"
+      ],
+      "then": [
+        "结果为338350",
+        "退出码0",
+        "文件/日志可靠保存后工具成功",
+        "LG/DA根据真实反馈继续"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b26",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B27",
+      "branch_id": "B27",
+      "flow_id": "F03",
+      "title": "确定失败后修改再测",
+      "level": "L1+L3",
+      "given": [
+        "脚本或代码测试有可复现错误"
+      ],
+      "when": [
+        "运行得到非零退出后由 Agent 修复并再次执行"
+      ],
+      "then": [
+        "原工具 FAILED 而 Run 可继续",
+        "新参数使用新逻辑槽",
+        "修复后的测试证据对应当前修订"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b27",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B28",
+      "branch_id": "B28",
+      "flow_id": "F03",
+      "title": "长外部工具挂起恢复",
+      "level": "L1+L2",
+      "given": [
+        "外部测试服务返回稳定查询句柄；准备成功/失败回调"
+      ],
+      "when": [
+        "挂起后发送重复回调并恢复"
+      ],
+      "then": [
+        "WAITING_EXTERNAL 释放执行槽但保留主 Run",
+        "回调幂等",
+        "失败作为工具结果",
+        "无并发图执行者"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b28",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B29",
+      "branch_id": "B29",
+      "flow_id": "F03",
+      "title": "远端成功回包丢失",
+      "level": "L1+L2",
+      "given": [
+        "远端已产生效果，本地未记录结果时断线"
+      ],
+      "when": [
+        "恢复/超时处理该操作"
+      ],
+      "then": [
+        "工具 UNKNOWN",
+        "用原键/句柄核验",
+        "不能因异常重跑",
+        "无核验能力时 WAITING_USER"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b29",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B30",
+      "branch_id": "B30",
+      "flow_id": "F03",
+      "title": "输出溢出与存储失败",
+      "level": "L1",
+      "given": [
+        "大 stdout/stderr、文件基线冲突、结果存储失败三组"
+      ],
+      "when": [
+        "执行并尝试提交结果"
+      ],
+      "then": [
+        "输出有截断且管道不卡",
+        "冲突不覆盖",
+        "存储失败不确认成功或提前发完成事件"
+      ],
+      "planned_test": "tests/integration/test_flow_03.py::test_b30",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B31",
+      "branch_id": "B31",
+      "flow_id": "F04",
+      "title": "证据充分的完成",
+      "level": "L1+L3",
+      "given": [
+        "工作完成且测试/计算证据与最终修订相符"
+      ],
+      "when": [
+        "最终提交结果"
+      ],
+      "then": [
+        "SUCCEEDED+completed",
+        "输出/引用/终态事件可靠",
+        "归属指针清空，下一 Run 可领取"
+      ],
+      "planned_test": "tests/integration/test_flow_04.py::test_b31",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B32",
+      "branch_id": "B32",
+      "flow_id": "F04",
+      "title": "仍需验证时继续",
+      "level": "L2+L3",
+      "given": [
+        "模型提出完成但未测，或测试后代码再次改变，或子任务未完成"
+      ],
+      "when": [
+        "运行 before-finalize 证据检查"
+      ],
+      "then": [
+        "继续同一图完成验证",
+        "不提前 run.finished",
+        "不可把过期测试当当前修订证据"
+      ],
+      "planned_test": "tests/integration/test_flow_04.py::test_b32",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B33",
+      "branch_id": "B33",
+      "flow_id": "F04",
+      "title": "部分完成或业务阻塞",
+      "level": "L2+L3",
+      "given": [
+        "部分工作完成或输入数据/环境缺失，已无允许的继续路径"
+      ],
+      "when": [
+        "收尾输出剩余项和原因"
+      ],
+      "then": [
+        "SUCCEEDED+partial/blocked",
+        "不冒充测试通过",
+        "真实已生成文件仍保留"
+      ],
+      "planned_test": "tests/integration/test_flow_04.py::test_b33",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B34",
+      "branch_id": "B34",
+      "flow_id": "F04",
+      "title": "终态提交中断",
+      "level": "L1+L2",
+      "given": [
+        "模型最终候选已完成，准备输出/文件/PG 提交故障"
+      ],
+      "when": [
+        "故障后运行对账或提交重试"
+      ],
+      "then": [
+        "只重试提交/核验，不重新执行模型写工具",
+        "最终事件仅在可靠提交后可见"
+      ],
+      "planned_test": "tests/integration/test_flow_04.py::test_b34",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B35",
+      "branch_id": "B35",
+      "flow_id": "F05",
+      "title": "所有可取消状态及重试",
+      "level": "L0+L1",
+      "given": [
+        "分别 QUEUED/RUNNING/WAITING_USER/WAITING_EXTERNAL/RECOVERING/CANCELLING/终态"
+      ],
+      "when": [
+        "请求取消，执行中组包含子孙进程"
+      ],
+      "then": [
+        "有效新请求转 CANCELLING 后核验停止再 CANCELLED",
+        "其他幂等空操作",
+        "审计/事件不重复"
+      ],
+      "planned_test": "tests/integration/test_flow_05.py::test_b35",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::StateTests.test_cancel_idempotent_and_not_success"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B36",
+      "branch_id": "B36",
+      "flow_id": "F05",
+      "title": "超时与未知进程优先核验",
+      "level": "L1",
+      "given": [
+        "总期限到达，参数化进程可停止/结果未知/已 CANCELLING"
+      ],
+      "when": [
+        "启动超时清理与状态推进"
+      ],
+      "then": [
+        "已核验退出可 TIMED_OUT",
+        "未知先核验并保留 Workspace",
+        "已有取消按 CANCELLED 收尾"
+      ],
+      "planned_test": "tests/integration/test_flow_05.py::test_b36",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B37",
+      "branch_id": "B37",
+      "flow_id": "F05",
+      "title": "有效新回应恢复",
+      "level": "L0+L1+L2",
+      "given": [
+        "WAITING_USER/WAITING_EXTERNAL，pending 未解决，版本匹配"
+      ],
+      "when": [
+        "原子消费回应并重新调度"
+      ],
+      "then": [
+        "原 Run QUEUED 后 RUNNING",
+        "input 不重复",
+        "LG resume 使用匹配结果",
+        "新审计修改字段更新"
+      ],
+      "planned_test": "tests/integration/test_flow_05.py::test_b37",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::StateTests.test_wait_resume_and_completion"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B38",
+      "branch_id": "B38",
+      "flow_id": "F06",
+      "title": "安全边界故障接管",
+      "level": "L1+L2",
+      "given": [
+        "参数化：模型响应未持久且未派发；工具结果已持久但 checkpoint 未提交"
+      ],
+      "when": [
+        "终止 Worker，另一个执行者接管"
+      ],
+      "then": [
+        "前者可重算模型，后者复用结果",
+        "关闭旧 Attempt 增 epoch",
+        "图沿原快照继续"
+      ],
+      "planned_test": "tests/integration/test_flow_06.py::test_b38",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B39",
+      "branch_id": "B39",
+      "flow_id": "F06",
+      "title": "未知副作用不重放",
+      "level": "L1+L2",
+      "given": [
+        "本机可能残留进程或外部状态不可查"
+      ],
+      "when": [
+        "Worker 接管核验失败"
+      ],
+      "then": [
+        "Run RECOVERING→WAITING_USER",
+        "工具 UNKNOWN",
+        "不释放未知 writer 的工作区给下一 Run"
+      ],
+      "planned_test": "tests/integration/test_flow_06.py::test_b39",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::StateTests.test_unknown_execution_waits_for_reconciliation"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B40",
+      "branch_id": "B40",
+      "flow_id": "F06",
+      "title": "旧执行者提交拒绝",
+      "level": "L0+L1",
+      "given": [
+        "旧 Worker 持有旧 epoch，已发生接管"
+      ],
+      "when": [
+        "旧 Worker 尝试改 Run/checkpoint/pending writes/发布修订"
+      ],
+      "then": [
+        "active指针/epoch/CAS在同一事务拒绝",
+        "新状态不被覆盖",
+        "旧本机目录不能成为正式修订"
+      ],
+      "planned_test": "tests/integration/test_flow_06.py::test_b40",
+      "status": "SPEC_ONLY",
+      "core_evidence": [
+        "tests/test_core.py::StateTests.test_stale_writer_rejected"
+      ],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B41",
+      "branch_id": "B41",
+      "flow_id": "F07",
+      "title": "流式事件与断线补发",
+      "level": "L1",
+      "given": [
+        "运行中有消息/工具事件，游标已记录"
+      ],
+      "when": [
+        "断开后连接另一个 API 连接并补发"
+      ],
+      "then": [
+        "seq 去重与顺序正确",
+        "message.completed替换临时文本",
+        "快照/水位一致",
+        "Run不中止"
+      ],
+      "planned_test": "tests/integration/test_flow_07.py::test_b41",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B42",
+      "branch_id": "B42",
+      "flow_id": "F07",
+      "title": "错误事件游标",
+      "level": "L1",
+      "given": [
+        "准备格式错、其他Run游标、超过水位三组"
+      ],
+      "when": [
+        "请求事件流"
+      ],
+      "then": [
+        "INVALID_EVENT_CURSOR",
+        "不默默跳历史，不将错误写进已打开流的普通JSON响应"
+      ],
+      "planned_test": "tests/integration/test_flow_07.py::test_b42",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B43",
+      "branch_id": "B43",
+      "flow_id": "F07",
+      "title": "慢客户端和终态关闭",
+      "level": "L1",
+      "given": [
+        "工具持续输出，客户端读取慢；另组Run已结束"
+      ],
+      "when": [
+        "限制读速/断开/收到终态后停止订阅"
+      ],
+      "then": [
+        "有界背压不影响Worker",
+        "断线可恢复",
+        "终态不无限自动重连"
+      ],
+      "planned_test": "tests/integration/test_flow_07.py::test_b43",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B44",
+      "branch_id": "B44",
+      "flow_id": "F07",
+      "title": "多轮会话继承文件",
+      "level": "L1+L3",
+      "given": [
+        "前轮已提交文件与确认历史，后轮先排队"
+      ],
+      "when": [
+        "前轮结束后执行后轮追问"
+      ],
+      "then": [
+        "新的Run/快照",
+        "执行时取前轮最新修订",
+        "历史不丢且无并发writer"
+      ],
+      "planned_test": "tests/integration/test_flow_07.py::test_b44",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B45",
+      "branch_id": "B45",
+      "flow_id": "F07",
+      "title": "新轮 Skill 升级与旧指令清理",
+      "level": "L2",
+      "given": [
+        "旧Run用了v1，手工源改v2，摘要可能含v1指令"
+      ],
+      "when": [
+        "重试旧请求并提交新一轮"
+      ],
+      "then": [
+        "旧请求仍v1",
+        "新Run锁v2",
+        "旧正文/摘要不作为当前活动指令",
+        "不破坏消息工具配对"
+      ],
+      "planned_test": "tests/integration/test_flow_07.py::test_b45",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B46",
+      "branch_id": "B46",
+      "flow_id": "F07",
+      "title": "失败图的下一轮",
+      "level": "L2",
+      "given": [
+        "前Run取消/失败且checkpoint含pending工具请求"
+      ],
+      "when": [
+        "在同Session提交新Run"
+      ],
+      "then": [
+        "不执行旧待决工具",
+        "安全收尾或新Thread承接确认事实",
+        "Session与文件继续可用"
+      ],
+      "planned_test": "tests/integration/test_flow_07.py::test_b46",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B47",
+      "branch_id": "B47",
+      "flow_id": "F05",
+      "title": "回应的幂等复用",
+      "level": "L1",
+      "given": [
+        "回应已消费并推进状态，原expected_version已旧"
+      ],
+      "when": [
+        "同response_key同内容再次提交"
+      ],
+      "then": [
+        "返回当前Run，不再次恢复、不改审计字段、不重复回应事件"
+      ],
+      "planned_test": "tests/integration/test_flow_05.py::test_b47",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    },
+    {
+      "case_id": "TC-B48",
+      "branch_id": "B48",
+      "flow_id": "F05",
+      "title": "回应冲突或越界",
+      "level": "L1",
+      "given": [
+        "同键不同内容、错误pending_id、新回应版本冲突三组"
+      ],
+      "when": [
+        "提交回应"
+      ],
+      "then": [
+        "409/404 明确错误",
+        "原待决项/运行状态不变，拒绝跨scope操作"
+      ],
+      "planned_test": "tests/integration/test_flow_05.py::test_b48",
+      "status": "SPEC_ONLY",
+      "core_evidence": [],
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+    }
+  ]
+}

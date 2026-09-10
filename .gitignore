@@ -1,0 +1,11 @@
+.venv/
+.env
+.env.*
+!.env.example
+.runtime/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
