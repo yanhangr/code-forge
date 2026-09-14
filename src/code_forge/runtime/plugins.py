@@ -20,7 +20,6 @@ from code_forge.ports import (
     WorkspacePort,
 )
 
-
 PluginFactory = Callable[..., Any]
 
 

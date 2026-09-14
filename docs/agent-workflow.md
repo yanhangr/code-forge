@@ -1,6 +1,8 @@
 # Agent 全流程、分支与框架职责
 
-版本：0.4，日期：2026-09-10。本文描述一期实际要实现的 Agent 工作过程。节点编号 B01—B48 对应 [测试用例](testing/agent-workflow-cases.md)；机器可读定义见 [测试注册表](testing/agent-workflow-cases.json)。这些是待实现的流程契约，不代表集成测试已通过。
+版本：0.5，日期：2026-09-12。本文描述一期实际要实现的 Agent 工作过程。节点编号 B01—B48 对应 [测试用例](testing/agent-workflow-cases.md)；机器可读定义见 [测试注册表](testing/agent-workflow-cases.json)。这些是待实现的流程契约，不代表集成测试已通过。
+
+当前本地实现实际写入的数据库表、Skill/Workspace/日志文件及其时序，见 [Agent 流程与数据落点（As-Is）](agent-data-lifecycle.md)。
 
 ## 1. 四种角色各自做什么
 
@@ -70,7 +72,7 @@ flowchart TD
 
 ## 3. F01：接受与排队（B01—B10）
 
-输入为受信 ExecutionContext、Session ID、用户 input、Agent/Skill 绑定和幂等键。RT 负责此阶段，DA/LG 尚未执行推理。
+输入为受信 ExecutionContext（含可选 UserBinding）、Run 级 Skill 路径、Session ID、用户 input、Agent/Skill 绑定和幂等键。RT 负责此阶段，DA/LG 尚未执行推理。User/Project 绑定和有效 Skill 路径在 Run 接受时冻结；同键换用户路径、项目路径、Skill 路径或其他请求内容返回冲突。
 
 | 分支 | 判断与动作 | 状态/持久结果 |
 | --- | --- | --- |
@@ -81,11 +83,11 @@ flowchart TD
 | B05 | 同键不同摘要 | IDEMPOTENCY_CONFLICT，不自动换键 |
 | B06 | Skill 缺失、包不合法、不兼容或快照落盘失败 | SKILL_NOT_FOUND/SKILL_INCOMPATIBLE/DEPENDENCY_UNAVAILABLE；不返回 202 |
 | B07 | 接受事务提交 | 输入/快照/QUEUED/接受事件同事务；新增审计字段写入 |
-| B08 | 队首且无冲突 writer | 锁 Session/Run，分配 epoch/Attempt/工作区起点，RUNNING |
+| B08 | 队首且无冲突 writer | 获取 Workspace lease，锁 Session/Run，分配 Session/Workspace epoch、Attempt、mount/cwd 和工作区起点，RUNNING |
 | B09 | Session 有活跃/等待主 Run 或资源暂不足 | 保持 QUEUED，有限轮询/退避，无模型调用 |
 | B10 | 排队超过期限或执行前配置不可继续 | 分别 TIMED_OUT/FAILED；终态事件后释放队列归属 |
 
-没有条件索引兜底时，B08/B09 必须以 Session.active_run_id、Run.active_attempt_id、行锁和 CAS 作为唯一归属依据。不能用 `SELECT status='RUNNING'` 后无锁启动。
+没有条件索引兜底时，B08/B09 必须以 Session.active_run_id、Workspace.active_attempt_id、Session/Workspace epoch、行锁和 CAS 作为唯一归属依据。同一 Project 的多个 Session 不能并发写同一 Workspace。
 
 ## 4. F02：组装图、上下文与 Agent 循环（B11—B22）
 
@@ -170,7 +172,7 @@ B23 无效参数/未注册工具/能力拒绝作为结构化工具错误返回�
 
 B24 已成功操作直接返回持久结果；运行中操作附着到原句柄；未知操作进入核验。B25 相同逻辑槽不同参数是冲突，不覆盖旧记录。Agent 根据明确失败修复后的新命令属于新的逻辑槽；不能给未知原操作换 ID 重跑。
 
-B26 本机 Python 在子进程执行。ToolRouter 记录状态，ExecutionBackend 管进程组/日志/时限，WorkspaceStore 提交文件，LG 保存返回的图状态，DA 再将反馈交给模型。测试是工具的真实退出和报告，不是模型自己验证自己。
+B26 本机 Python 在子进程执行。绑定模式固定使用 UserBinding.project_path，legacy 使用 Attempt 目录。ToolRouter 记录状态，ExecutionBackend 管进程组/日志/时限，WorkspaceStore 生成修订，RT 以 lease/epoch/父修订 CAS 发布 current_revision，LG 保存返回的图状态。
 
 B27 子进程正常结束但退出码非零，工具 FAILED 而 Run 通常仍 RUNNING；DA 可以读取错误、修改代码并用新逻辑槽再测。持续失败超过预算则输出 partial/blocked。单操作超时在已核验进程结束后也可作为明确工具失败处理。
 
@@ -226,7 +228,7 @@ B41 首次流式订阅与有效游标重连：RT 补发持久事件，再继续�
 
 B42 游标属于其他 Run、格式错误或超过当前水位时返回 INVALID_EVENT_CURSOR；不能跳过历史默认为成功。B43 慢客户端设置背压/断开重连；浏览器断开不取消 Run；终态后客户端关闭 SSE，避免无限重连。
 
-B44 普通新一轮在原 Session 创建新 Run，配置重新固定，工作区起点拿到执行权后读取。B45 手工 Skill 已更新：新 Run 解析新包，旧 Run 和同键重试保留原包；新上下文不能把旧 Skill 正文/摘要重新作为活动指令。
+B44 普通新一轮在原 Session 创建新 Run，配置、UserBinding 和 Run 级 Skill 路径重新校验并固定，工作区起点拿到 Workspace lease 后读取；同一用户 Project 的其他 Session 也必须等待该 lease。B45 手工 Skill 已更新：新 Run 按用户默认路径或 Platform 显式路径解析新包，旧 Run 和同键重试保留原包；新上下文不能把旧 Skill 正文/摘要重新作为活动指令。
 
 B46 前序失败/取消的图仍带 pending tool calls：先做无副作用的收尾核验。无法安全规范化则新建 Thread 承接已确认历史与当前 Workspace，产品 Session 不变。禁止一调用新 Run 就自动触发旧取消工具；旧 checkpoint/Attempt 留作审计。
 

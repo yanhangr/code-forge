@@ -38,7 +38,7 @@ class ArchitectureRulesTests(unittest.TestCase):
 
     def test_indexes_are_simple_primary_normal_or_unique(self):
         statements = re.findall(r"CREATE (?:UNIQUE )?INDEX\b.*?;", self.sql, re.S)
-        self.assertEqual(len(statements), 4)
+        self.assertEqual(len(statements), 6)
         for statement in statements:
             self.assertRegex(
                 statement, r"^CREATE (?:UNIQUE )?INDEX \w+ ON runtime\.\w+\([\w, ]+\);$"
@@ -49,15 +49,17 @@ class ArchitectureRulesTests(unittest.TestCase):
         self.assertIn("active_attempt_id uuid", self.sql)
         self.assertIn("run_active_attempt_fk", self.sql)
         self.assertIn("session_active_run_fk", self.sql)
+        self.assertIn("workspace_active_attempt_fk", self.sql)
+        self.assertIn("idx_runs_scope_status_due_created", self.sql)
         self.assertNotIn("one_live_attempt", self.sql)
         self.assertNotIn("one_running_run_per_session", self.sql)
 
     def test_resource_api_uses_readonly_audit_fields(self):
         spec = json.loads((ROOT / "docs/api/openapi.json").read_text())
-        for name in ("Session", "Run"):
+        for name in ("Session", "Message"):
             schema = spec["components"]["schemas"][name]
-            self.assertTrue(AUDIT <= set(schema["required"]))
-            for field in AUDIT:
+            for field in ("date_created", "date_updated"):
+                self.assertIn(field, schema["required"])
                 self.assertTrue(schema["properties"][field]["readOnly"])
             self.assertNotIn("created_at", schema["properties"])
             self.assertNotIn("updated_at", schema["properties"])

@@ -1,109 +1,808 @@
-# Platform ↔ Agent Runtime 接入契约 v1（文档修订0.2）
+# Platform ↔ Agent Runtime 接口规范 v1
 
-日期：2026-09-10。状态：设计契约，服务端与页面尚待实现。字段/类型以 [OpenAPI](openapi.json) 为准；行为以本文为准。示例 ID 为 UUID，密钥不属于公开请求或事件字段。
+日期：2026-09-14。状态：唯一接口规范。
 
-Session/Run 资源读接口统一包含只读审计字段 date_created、created_by、date_updated、updated_by，时间为带时区的 ISO 8601。客户端不得提交它们；业务事件 occurred_at 保持原语义。当前没有已部署客户端，本次直接修订契约；未来不兼容变化需要版本迁移。
+本文是真实 Platform 服务端开发者的接口入口。Runtime 内部可以使用 Run、Attempt 等实现
+对象，但 Platform 对外只看到 Session 和 Message。
 
-## 1. 当前边界与默认值
-
-Runtime 基址示例为 http://127.0.0.1:8000，最小 Platform 是另一个应用。当前为可信内部默认授权验证，不要求登录/角色/审批。默认 scope_id=default，X-Forge-Scope 默认为 default；它不是认证凭据，后续受信接入层需要验证其来源。
-
-所有 v1 资源按 X-Forge-Scope 解析。POST 中 context.scope_id 未给出时由该请求头填充；两者均明确给出但不同返回 INVALID_REQUEST。actor_ref/external_ref 可用于业务关联，不能替代未来授权。GET/取消等没有 Context 请求体时仍用该作用域头。
-
-Platform 不允许通过 Runtime 响应推测生产权限已经就绪。验证服务默认只绑定本机或受控内部网络，跨站访问控制由实现阶段落实；不得为了页面联调无约束公开可执行命令的入口。
-
-## 2. 最小交互流程
-
-1. GET /health：显示 Runtime 可达、模型是否已配置、执行后端和默认授权模式。模型未配置不能伪装成真实回答。
-2. GET /v1/skills：列出手工 Skill 的摘要与当前版本；页面只选择，不编辑发布。
-3. POST /v1/sessions：创建会话。Idempotency-Key 用于网络重试，响应 201 为 Session。
-4. POST /v1/sessions/{id}/runs：input 必填，agent_ref 默认 general@1；skills 空数组表示没有 Skill 候选。返回 202 AcceptedRun，不等待模型完成。
-5. GET /v1/runs/{id}/events：按 SSE 显示消息/工具进展，run.finished 后读取最终状态。
-6. 用户追问创建新 Run；若当前等待澄清，提交 /responses 恢复原 Run。
-7. 页面刷新先读 /snapshot 和当前会话 Run 列表，再按事件游标续订。
-
-代码/分析是否成功由真实工具输出与 task_outcome 判断；HTTP 202 只是接受，Run SUCCEEDED 只是正常完成输出协议，不能直接渲染为“测试通过”。
-
-## 3. 提交与幂等
-
-创建 Run 示例：
-
-```http
-POST /v1/sessions/11111111-1111-4111-8111-111111111111/runs
-Content-Type: application/json
-Idempotency-Key: browser-message-0001
-X-Forge-Scope: default
-```
-
-```json
-{
-  "input": "使用 Python 计算 1 到 100 的平方和，保存结果并告诉我文件名",
-  "agent_ref": "general@1",
-  "skills": [{"name": "python-analysis", "version": "1"}],
-  "context": {"scope_id": "default", "actor_ref": null, "external_ref": "ui-message-0001"}
-}
-```
-
-```json
-{
-  "id": "22222222-2222-4222-8222-222222222222",
-  "session_id": "11111111-1111-4111-8111-111111111111",
-  "status": "QUEUED",
-  "state_version": 0,
-  "reused": false
-}
-```
-
-Run 幂等范围为 `(scope_id, session_id, Idempotency-Key)`。正文经过传输层缺省值补齐后，用核心 request_fingerprint 计算；保留 input 空白和 Skill 顺序。同键同摘要复用原 Run，即使 Skill 源文件已修改，也不重新解析；不同摘要返回 409 IDEMPOTENCY_CONFLICT。复用时 status/state_version 可以已前进，202 不意味着它仍在排队。
-
-Session 创建幂等范围为 `(scope_id, Idempotency-Key)`，由 session_requests 记录规范化请求摘要。不同业务操作不共享请求键命名空间。用户明确提交新任务生成新键；超时重试原 HTTP 请求复用原键。
-
-## 4. 事件与断线恢复
-
-每个事件信封含 event_id、run_id、seq、schema_version、type、occurred_at、data。事件名与各自 data 的封闭 schema 均在 OpenAPI 中，不由前端自行猜测。SSE 的 id 为 `run_id:seq`，event 为 type，data 为整个事件 JSON。
+## 1. 最短调用顺序
 
 ```text
-id: 22222222-2222-4222-8222-222222222222:4
-event: tool.output
-data: {"event_id":"33333333-3333-4333-8333-333333333333","run_id":"22222222-2222-4222-8222-222222222222","seq":4,"schema_version":"1","type":"tool.output","occurred_at":"2026-09-10T00:00:00Z","data":{"operation_id":"44444444-4444-4444-8444-444444444444","stream":"stdout","text":"338350\n","truncated":false}}
+1. POST /v1/create-session
+   -> 取得 session_id
 
+2. POST /v1/send-message
+   建立 SSE，首个事件 message.accepted 返回 message_id
+   后续在同一连接接收执行事件，直到 message.finished
+
+3. 如果当前 Message 需要用户回应
+   POST /v1/reply
+   继续通过同一 SSE 接收恢复后的事件
+
+4. 页面刷新或网络断开
+   GET /v1/get-session-state
+   -> 取得 event_cursor
+   GET /v1/stream-session-events
+   -> 从 event_cursor 之后恢复订阅
+
+5. 查询历史
+   GET /v1/get-message
+   GET /v1/list-session-messages
 ```
 
-- Run 内 seq 严格递增，时间戳不是顺序依据。客户端按 run_id+seq 去重，允许重连时收到重复事件。
-- 首次从 0 开始；恢复使用 Last-Event-ID 或 after_seq，二者同时出现采用同 Run 的较大值。不同 Run 的游标返回 INVALID_EVENT_CURSOR。
-- /snapshot 返回同一数据库一致性快照中的 Run、待回应项和 event_cursor。前端先应用快照，再订阅大于该游标的事件；不能先读消息再独立取水位而漏中间变化。
-- 先补发历史，再继续监听；建立通知与补发之间要再次查库水位，避免订阅竞态。数据库事件可轮询，Redis 非当前必需。
-- message.delta 是增量；message.completed 携带该 message_id 的完整文本，替换临时拼接内容。不能把完整文本再次追加一遍。
-- tool.output 是标准输出/错误，不是模型回复，也不是隐藏推理。只展示有界输出；truncated=true 时不能声称日志完整。
-- run.finished 为终态事件，前端关闭 EventSource，避免终态后浏览器自动重连死循环。断线本身不取消 Run。
-- 当前验证阶段事件随 Run 保留，不裁剪单个 Run 中段历史。未来引入保留窗口时必须增加明确的快照恢复语义，不能静默漏事件。
-- SSE 前校验错误用 JSON 错误返回；流开启后执行错误以 run.finished/error 或工具事件表达，不能在 SSE 中间塞普通 HTTP 错误页。
+接口优先级：
 
-分页列表采用 items/next_cursor，cursor 不透明，按创建时间与 ID 稳定排序；Run 列表按 run_seq 正序。event-history 按 seq 正序，返回 items/next_after_seq，下一页传 after_seq；不要把事件分页字段混用为普通 cursor。
-
-## 5. 取消、等待与重新执行
-
-POST /cancel 幂等，不要求额外请求键。已终态返回原 Run；执行中进入 CANCELLING，停止新工具并清理/核验已有进程。仅收到取消请求不意味着 Python 已退出。最终 CANCELLED 也不撤销已产生的文件或远端副作用，结果未知必须保留证据。
-
-信息澄清通过 run.waiting 的 pending_response 展示；响应带 pending_id、response_key、expected_state_version 和 text。先验证待决项属于该 Run，再查 response_key 的既有消费记录：同摘要重复回应返回当前结果，不因原 expected_state_version 已过期报错。新回应才检查待决项仍可回应与状态版本，并事务性消费。不同摘要或新回应的错误状态返回冲突。
-
-execution_reconciliation 用于进程结果未知。用户文本不能被直接当作“重跑授权”；Runtime 的核验处理器先确认原操作和当前文件状态，再给出受控恢复/结束动作。首个版本可以要求用户结束原 Run 并新建任务，必须显式说明，不能后台盲重放。
-
-approval kind 仅预留；当前默认授权不产生普通工具审批。实现者不能因此要求开发审批中心后主流程才能运行。
-
-## 6. 文件、错误与扩展
-
-文件接口仅供实现验证，最小页面不要求文件管理或报告预览。path 是 Workspace 相对路径，拒绝绝对路径、目录穿越和符号链接逃逸；文本读取有大小上限，二进制返回可识别错误或后续产物下载接口，不能以错误解码内容冒充文本。
-
-统一错误字段：error.code/message/retryable/request_id。request_id 是诊断关联，不是幂等键。不得返回堆栈、模型密钥或进程环境。
-
-| HTTP | 典型错误码 | Platform 行为 |
+| 级别 | 接口 | 说明 |
 | --- | --- | --- |
-| 400 / 422 | INVALID_REQUEST、INVALID_EVENT_CURSOR、SKILL_INCOMPATIBLE | 提示修正输入，不自动无限重试 |
-| 403 | CAPABILITY_DENIED | 展示拒绝原因，当前默认授权阶段仍保留契约 |
-| 404 | SESSION_NOT_FOUND、RUN_NOT_FOUND、SKILL_NOT_FOUND | 刷新资源选择，不读取其他作用域 |
-| 409 | IDEMPOTENCY_CONFLICT、STATE_CONFLICT | 保留用户输入，重新读取状态，不能自动换键重提写任务 |
-| 429 | RESOURCE_LIMIT | 有界退避/排队提示 |
-| 503 | MODEL_NOT_CONFIGURED、DEPENDENCY_UNAVAILABLE | 明确当前无法执行，不能用假模型代替真实成功 |
+| 核心写 | `create-session`、`update-session`、`send-message`、`reply` | 主流程；发送和回复直接返回 SSE。 |
+| 核心读 | `get-session-state`、`get-message` | 状态查询。 |
+| 断线恢复 | `stream-session-events` | 只用于页面刷新或网络重连。 |
+| 历史恢复 | `get-session`、`list-sessions`、`list-session-messages`、`list-session-events` | 刷新、翻页和补偿。 |
+| 诊断 | `health`、`list-session-files`、`read-session-file` | 不作为主链路依赖。 |
 
-EXECUTION_FAILED/EXECUTION_UNKNOWN 主要在工具/Run 结果内出现；HTTP 任务查询仍可正常返回该失败事实。增加错误码或事件必须同步核心代码、生成器和文档，再由实现方使用。
+## 2. 统一响应格式
+
+所有普通 HTTP 接口统一返回：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {}
+}
+```
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `code` | string | 业务结果码。成功固定为 `0000`；失败使用下表的错误码。 |
+| `message` | string | 面向调用方的简短说明。成功固定为 `success`。 |
+| `data` | object | 接口业务数据；没有数据时返回空对象 `{}`。 |
+
+错误示例：
+
+```json
+{
+  "code": "1001",
+  "message": "storage_root must be an absolute path",
+  "data": {}
+}
+```
+
+业务码：
+
+| code | HTTP | 含义 |
+| --- | --- | --- |
+| `0000` | 200/201/202 | 成功。 |
+| `1001` | 400 | 请求字段或格式不合法。 |
+| `1002` | 404 | Session 不存在。 |
+| `1003` | 404 | Message 不存在。 |
+| `1004` | 409 | 状态冲突。 |
+| `1005` | 409 | Session 已有 Message 正在执行，Platform 应自行排队。 |
+| `2001` | 422 | Skill 路径或 Skill 包不合法。 |
+| `3001` | 200/503 | 执行确定失败。 |
+| `3002` | 200/503 | 外部效果未知，需要核验。 |
+| `4001` | 503 | 模型不可用。 |
+| `5001` | 503 | 依赖不可用。 |
+| `9001` | 500 | Runtime 内部错误。 |
+
+HTTP 状态码仍用于表达网络和协议结果：
+
+| HTTP | 含义 |
+| --- | --- |
+| 200 | 查询或更新成功。 |
+| 201 | Session 创建成功。 |
+| 202 | Message 接受成功。 |
+| 400 | 请求格式或字段错误。 |
+| 404 | Session/Message 不存在。 |
+| 409 | 状态冲突。 |
+| 422 | Skill 包或配置不兼容。 |
+| 429 | 资源限制。 |
+| 503 | 模型或依赖不可用。 |
+
+## 3. 路径模型
+
+### 3.1 物理路径与逻辑路径
+
+```text
+storage_root  = /mnt/nas
+user_rel_path = T001/users/U001
+
+user_root = /mnt/nas/T001/users/U001
+```
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `storage_root` | absolute string | 是 | Runtime 使用的稳定挂载根路径。 |
+| `user_rel_path` | relative string | 是 | 用户逻辑路径。 |
+| `project_ref` | string 或 null | 否 | 项目逻辑引用。 |
+| `project_rel_path` | relative string 或 null | 否 | 相对用户根目录的项目路径。 |
+
+`storage_root` 语义：
+
+- 它是稳定的逻辑挂载点，例如始终使用 `/mnt/nas`。
+- NAS 设备迁移时，优先把新存储挂载到同一个 `storage_root`，逻辑身份不变。
+- Runtime 内部以规范化后的 `storage_root + user_rel_path + project identity` 作为
+  Workspace 身份。
+- 如果 Platform 改变 `storage_root` 字符串，则会被识别为新的 Workspace；此时必须显式
+  同步 Session 绑定，不能静默复用旧身份。
+
+默认目录：
+
+```text
+workspace_root = <user_root>/workspace
+default_skills = <user_root>/config/skills
+```
+
+项目目录：
+
+| 传入 | 实际项目目录 |
+| --- | --- |
+| 只传 `project_ref` | `<user_root>/workspace/projects/<project_ref>` |
+| 只传 `project_rel_path` | `<user_root>/<project_rel_path>` |
+| 两者都传 | 使用 `project_rel_path`；`project_ref` 只作为稳定逻辑身份 |
+| 都不传 | `<user_root>/workspace` |
+
+### 3.2 NAS 迁移
+
+迁移前：
+
+```json
+{
+  "storage_root": "/mnt/nas-old",
+  "user_rel_path": "T001/users/U001"
+}
+```
+
+迁移后：
+
+```json
+{
+  "storage_root": "/mnt/nas-new",
+  "user_rel_path": "T001/users/U001"
+}
+```
+
+规则：
+
+- 推荐通过重新挂载保持相同 `storage_root`。
+- 如果必须修改根路径，需要显式迁移已有 Session/Workspace 绑定。
+- 已开始的 Message 使用接受时冻结的解析路径。
+- 新 Message 使用新的 `storage_root`。
+
+### 3.3 Skill 路径
+
+`skill_paths` 的元素有两种合法形式：
+
+1. 直接指向包含 `SKILL.md` 的 Skill 包目录。
+2. 指向 Skill 根目录；Runtime 只扫描它的直接子目录，寻找每个子目录中的 `SKILL.md`。
+
+不会递归扫描更深层目录。
+
+示例：
+
+```text
+<user_root>/config/skills/
+├── analysis/
+│   └── SKILL.md
+├── report/
+│   └── SKILL.md
+└── helper/
+    └── README.md
+```
+
+传入：
+
+```json
+{
+  "skill_paths": ["T001/users/U001/config/skills"]
+}
+```
+
+Runtime 会发现 `analysis` 和 `report` 两个 Skill 包，忽略 `helper`。
+
+规则：
+
+- 不传 `skill_paths`：默认使用 `<user_root>/config/skills`，同样只扫描一层。
+- 传入多个路径：按顺序处理。
+- 空数组：不使用默认 Skill。
+- Platform 不传 Skill 名称和版本；Runtime 从各包的 `SKILL.md` 读取。
+
+## 4. 公开对象
+
+### 4.1 Session
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `session_id` | UUID | Session ID。 |
+| `title` | string | 会话标题。 |
+| `user_rel_path` | string | 用户逻辑路径。 |
+| `project_ref` | string 或 null | 项目逻辑引用。 |
+| `project_rel_path` | string | 项目相对路径。 |
+| `date_created` | date-time | 创建时间。 |
+| `date_updated` | date-time | 最后修改时间。 |
+
+### 4.2 Message
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `message_id` | UUID | Runtime 生成的 Message ID。 |
+| `session_id` | UUID | 所属 Session。 |
+| `message_seq` | integer | Session 内消息序号，从 1 开始。 |
+| `input` | string | 用户输入。 |
+| `status` | MessageStatus | 当前状态。 |
+| `task_outcome` | string 或 null | `completed/partial/blocked`。 |
+| `output` | string 或 null | 最终输出。 |
+| `error` | Error 或 null | 终态错误。 |
+| `date_created` | date-time | 创建时间。 |
+| `date_updated` | date-time | 最后修改时间。 |
+
+### 4.3 MessageStatus
+
+| 状态 | 含义 |
+| --- | --- |
+| `QUEUED` | 已接受，等待执行。 |
+| `RUNNING` | 正在执行。 |
+| `WAITING_USER` | 等待用户输入。 |
+| `WAITING_EXTERNAL` | 等待外部依赖。 |
+| `RECOVERING` | 正在核验恢复。 |
+| `SUCCEEDED` | 正常结束。 |
+| `FAILED` | 失败。 |
+| `TIMED_OUT` | 已超时。 |
+
+### 4.4 Error
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `code` | string | 错误码。 |
+| `message` | string | 错误说明。 |
+| `retryable` | boolean | 是否建议有界重试。 |
+| `request_id` | string | 诊断关联 ID。 |
+
+## 5. 核心接口
+
+### 5.1 `POST /v1/create-session`
+
+作用：创建 Session，绑定 NAS 根路径和用户逻辑路径。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `storage_root` | absolute string | 是 | 当前物理根。 |
+| `user_rel_path` | relative string | 是 | 用户逻辑路径。 |
+| `project_ref` | string 或 null | 否 | 项目逻辑引用。 |
+| `project_rel_path` | relative string 或 null | 否 | 项目相对路径。 |
+
+请求示例：
+
+```json
+{
+  "storage_root": "/mnt/nas",
+  "user_rel_path": "T001/users/U001",
+  "project_ref": "P001"
+}
+```
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "title": "新会话",
+    "user_rel_path": "T001/users/U001",
+    "project_ref": "P001",
+    "project_rel_path": "workspace/projects/P001",
+    "date_created": "2026-09-14T10:00:00Z",
+    "date_updated": "2026-09-14T10:00:00Z"
+  }
+}
+```
+
+### 5.2 `POST /v1/update-session`
+
+作用：修改会话标题。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+| `title` | string，1-200 | 是 | 新标题。 |
+
+请求示例：
+
+```json
+{
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "title": "九月销售分析"
+}
+```
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "title": "九月销售分析",
+    "user_rel_path": "T001/users/U001",
+    "project_ref": "P001",
+    "project_rel_path": "workspace/projects/P001",
+    "date_created": "2026-09-14T10:00:00Z",
+    "date_updated": "2026-09-14T10:05:00Z"
+  }
+}
+```
+
+### 5.3 `GET /v1/get-session`
+
+作用：读取一个 Session。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "title": "九月销售分析",
+    "user_rel_path": "T001/users/U001",
+    "project_ref": "P001",
+    "project_rel_path": "workspace/projects/P001",
+    "date_created": "2026-09-14T10:00:00Z",
+    "date_updated": "2026-09-14T10:05:00Z"
+  }
+}
+```
+
+### 5.4 `GET /v1/list-sessions`
+
+作用：分页列出 Session。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `user_rel_path` | string | 否 | 按用户逻辑路径过滤。 |
+| `project_ref` | string | 否 | 按项目过滤。 |
+| `cursor` | string | 否 | 分页游标。 |
+| `limit` | integer | 否 | 默认 50，最大 100。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "items": [
+      {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "title": "九月销售分析",
+        "user_rel_path": "T001/users/U001",
+        "project_ref": "P001",
+        "project_rel_path": "workspace/projects/P001",
+        "date_created": "2026-09-14T10:00:00Z",
+        "date_updated": "2026-09-14T10:05:00Z"
+      }
+    ],
+    "next_cursor": null
+  }
+}
+```
+
+### 5.5 `POST /v1/send-message`
+
+作用：向 Session 提交一条用户消息。Runtime 负责生成 `message_id` 并执行。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | 目标 Session。 |
+| `input` | string，1-100000 | 是 | 用户输入原文。 |
+| `agent_ref` | string | 否 | Agent 配置引用。 |
+| `skill_paths` | string[] 或 null | 否 | Skill 包目录或一层 Skill 根目录。 |
+| `storage_root` | absolute string 或 null | 否 | 当前 NAS 根；用于迁移场景。 |
+
+执行语义：
+
+1. Runtime 接受后自行生成 `message_id`。
+2. Runtime 首期只执行当前 Session 的一条 Message。
+3. 如果 Session 已有未结束的 Message，返回业务码 `1005` 和 HTTP 409，不创建新 Message。
+4. 是否排队、等待还是改变对话方向由 Platform 决定。
+5. 首期不支持打断正在执行的 Message。
+6. 网络超时后不要盲目重发；先调用 `get-session-state` 或 `list-session-messages`。
+
+该设计代价是：Runtime 不承诺网络超时场景下的 exactly-once。Platform 关闭创建消息的自动
+重试；若无法确认结果，应以 Session 当前状态为准继续展示和恢复。
+
+请求示例：
+
+```json
+{
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "input": "分析销售数据并生成报告",
+  "agent_ref": "general@1",
+  "skill_paths": [
+    "T001/users/U001/config/skills"
+  ]
+}
+```
+
+响应类型：`text/event-stream`。
+
+首个 SSE 事件必须返回 Message 接受结果：
+
+```text
+id: 11111111-1111-4111-8111-111111111111:1
+event: message.accepted
+data: {"code":"0000","message":"success","data":{"event_id":"44444444-4444-4444-8444-444444444444","session_id":"11111111-1111-4111-8111-111111111111","message_id":"22222222-2222-4222-8222-222222222222","seq":1,"type":"message.accepted","occurred_at":"2026-09-14T10:00:00Z","data":{"message_id":"22222222-2222-4222-8222-222222222222","status":"QUEUED"}}}
+```
+
+后续 SSE 事件在同一连接中继续发送 `message.*`、`tool.*`、`skill.*` 和
+`workspace.committed`，直到 `message.finished`。
+
+如果 Message 因 Session busy 未创建，则不建立 SSE，直接返回普通 JSON 错误：
+
+```json
+{
+  "code": "1005",
+  "message": "session already has a running message",
+  "data": {}
+}
+```
+
+### 5.6 `GET /v1/get-session-state`
+
+作用：读取 Session 当前执行状态、待回应项和事件游标。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "session": {
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "title": "九月销售分析",
+      "user_rel_path": "T001/users/U001",
+      "project_ref": "P001",
+      "project_rel_path": "workspace/projects/P001",
+      "date_created": "2026-09-14T10:00:00Z",
+      "date_updated": "2026-09-14T10:05:00Z"
+    },
+    "current_message": {
+      "message_id": "22222222-2222-4222-8222-222222222222",
+      "status": "WAITING_USER"
+    },
+    "pending_reply": {
+      "pending_id": "33333333-3333-4333-8333-333333333333",
+      "message_id": "22222222-2222-4222-8222-222222222222",
+      "kind": "clarification",
+      "prompt": "请选择统计时间范围"
+    },
+    "event_cursor": "11111111-1111-4111-8111-111111111111:12"
+  }
+}
+```
+
+Platform 从这里取得 `data.pending_reply.pending_id`，再调用 `reply`。SSE 的
+`message.waiting` 事件也会携带同一个 `pending_id`。
+
+### 5.7 `GET /v1/get-message`
+
+作用：读取一条 Message。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `message_id` | UUID | 是 | Message ID。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "message_id": "22222222-2222-4222-8222-222222222222",
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "message_seq": 1,
+    "input": "分析销售数据并生成报告",
+    "status": "SUCCEEDED",
+    "task_outcome": "completed",
+    "output": "报告已生成。",
+    "error": null,
+    "date_created": "2026-09-14T10:00:00Z",
+    "date_updated": "2026-09-14T10:05:00Z"
+  }
+}
+```
+
+### 5.8 `GET /v1/list-session-messages`
+
+作用：分页读取 Session 的消息历史。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+| `cursor` | string | 否 | 分页游标。 |
+| `limit` | integer | 否 | 默认 50，最大 100。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "items": [
+      {
+        "message_id": "22222222-2222-4222-8222-222222222222",
+        "message_seq": 1,
+        "input": "分析销售数据并生成报告",
+        "status": "SUCCEEDED",
+        "task_outcome": "completed",
+        "output": "报告已生成。"
+      }
+    ],
+    "next_cursor": null
+  }
+}
+```
+
+### 5.9 `POST /v1/reply`
+
+作用：回应当前 `WAITING_USER` Message。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `message_id` | UUID | 是 | 等待回应的 Message。 |
+| `pending_id` | UUID | 是 | 待回应项 ID。 |
+| `text` | string，1-100000 | 是 | 用户回应。 |
+
+请求示例：
+
+```json
+{
+  "message_id": "22222222-2222-4222-8222-222222222222",
+  "pending_id": "33333333-3333-4333-8333-333333333333",
+  "text": "统计最近 30 天"
+}
+```
+
+响应类型：`text/event-stream`。
+
+首个事件为 `message.resumed`：
+
+```text
+id: 11111111-1111-4111-8111-111111111111:13
+event: message.resumed
+data: {"code":"0000","message":"success","data":{"event_id":"55555555-5555-4555-8555-555555555555","session_id":"11111111-1111-4111-8111-111111111111","message_id":"22222222-2222-4222-8222-222222222222","seq":13,"type":"message.resumed","occurred_at":"2026-09-14T10:06:00Z","data":{"message_id":"22222222-2222-4222-8222-222222222222","status":"QUEUED"}}}
+```
+
+后续事件继续通过同一个 SSE 连接返回。
+
+同一个 `pending_id` 重复提交不会再次消费；已解决的 `pending_id` 不再接受新内容。
+
+## 6. 事件接口
+
+### 6.1 `GET /v1/stream-session-events`
+
+作用：页面刷新或网络断开后的恢复接口。普通发送流程使用 `send-message` 自带的 SSE，
+不需要额外调用本接口。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+| `after_seq` | integer | 否 | 只发送该序号之后的事件。 |
+
+SSE 示例：
+
+```text
+id: 11111111-1111-4111-8111-111111111111:12
+event: message.completed
+data: {"code":"0000","message":"success","data":{"event_id":"44444444-4444-4444-8444-444444444444","session_id":"11111111-1111-4111-8111-111111111111","message_id":"22222222-2222-4222-8222-222222222222","seq":12,"type":"message.completed","occurred_at":"2026-09-14T10:05:00Z","data":{"message_id":"22222222-2222-4222-8222-222222222222","text":"报告已生成。"}}}
+```
+
+规则：
+
+- Platform 按 `session_id + seq` 去重。
+- `message.delta` 是增量。
+- `message.completed` 是完整文本。
+- `message.finished` 是 Message 终态。
+- 断线只影响订阅连接，不改变 Message 状态。
+
+事件类型：
+
+| 类型 | 含义 |
+| --- | --- |
+| `message.accepted` | Message 已接受。 |
+| `message.started` | 开始处理。 |
+| `message.waiting` | 等待用户或外部依赖。 |
+| `message.resumed` | 用户回应后恢复。 |
+| `message.recovering` | 正在核验恢复。 |
+| `message.finished` | Message 终态。 |
+| `message.delta` | 模型文本增量。 |
+| `message.completed` | 完整模型回复。 |
+| `tool.prepared` | 工具意图已记录。 |
+| `tool.started` | 工具开始。 |
+| `tool.output` | 工具输出。 |
+| `tool.finished` | 工具结束。 |
+| `tool.unknown` | 工具结果未知。 |
+| `skill.activated` | Skill 已加载。 |
+| `skill.started` | Skill 操作开始。 |
+| `skill.finished` | Skill 操作结束。 |
+| `workspace.committed` | 文件修订已提交。 |
+
+`message.waiting` 的 `data` 结构：
+
+```json
+{
+  "pending_reply": {
+    "pending_id": "33333333-3333-4333-8333-333333333333",
+    "message_id": "22222222-2222-4222-8222-222222222222",
+    "kind": "clarification",
+    "prompt": "请选择统计时间范围"
+  }
+}
+```
+
+### 6.2 `GET /v1/list-session-events`
+
+作用：分页读取 Session 事件，用于刷新和诊断。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+| `after_seq` | integer | 否 | 从该序号之后读取。 |
+| `limit` | integer | 否 | 默认 200，最大 1000。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "items": [],
+    "next_after_seq": 12
+  }
+}
+```
+
+## 7. 诊断接口
+
+### 7.1 `GET /health`
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "status": "ok",
+    "api_version": "1",
+    "model_configured": true,
+    "execution_backend": "local_process",
+    "permission_mode": "default_allow",
+    "isolation_mode": "trusted_logical"
+  }
+}
+```
+
+### 7.2 `GET /v1/list-session-files`
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+| `storage_root` | absolute string | 否 | 迁移后的当前 NAS 根。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "items": [
+      {
+        "path": "report.md",
+        "size_bytes": 2048,
+        "digest": "sha256:..."
+      }
+    ],
+    "next_cursor": null
+  }
+}
+```
+
+### 7.3 `GET /v1/read-session-file`
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | Session ID。 |
+| `storage_root` | absolute string | 否 | 迁移后的当前 NAS 根。 |
+| `path` | relative string | 是 | 项目内相对路径。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "path": "report.md",
+    "content": "# Report\n",
+    "digest": "sha256:...",
+    "truncated": false
+  }
+}
+```
+
+## 8. Platform 侧需要保存
+
+| 数据 | 用途 |
+| --- | --- |
+| `tenant_id/user_id` | Platform 自己的权限和业务关系。 |
+| `user_rel_path` | 稳定的用户逻辑身份。 |
+| `project_ref/project_rel_path` | 项目定位。 |
+| `session_id` | Session 句柄。 |
+| `message_id` | Runtime 返回的消息句柄。 |
+| `pending_id` | 澄清或核验项。 |
+| `event_cursor` | SSE 断线恢复。 |
+
+Platform 不需要传：
+
+- 用户角色或 ACL；
+- 登录令牌；
+- `tenant_ref` 或 `user_ref`；
+- `scope_id`；
+- 客户端生成的 `message_id`；
+- `Idempotency-Key`。
+
+## 9. 实现落地范围
+
+确认本文后，需要同步修改：
+
+1. 核心 contracts 和 ports，把公开 Message 映射到内部 Run。
+2. Runtime HTTP transport，使用动作型接口名。
+3. 所有 HTTP 响应统一包装为 `{code,message,data}`。
+4. SQLite/PostgreSQL 会话、Workspace 和 Message 映射。
+5. Session 级事件序号与 SSE 投影，不向 Platform 暴露 `run_id`。
+6. Skill resolver 支持直接包目录和一层根目录扫描。
+7. OpenAPI 和测试。

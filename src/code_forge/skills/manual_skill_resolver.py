@@ -6,12 +6,20 @@ import hashlib
 import json
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from code_forge.contracts import DomainError, ErrorCode, RunRequest, RunSnapshot, SkillBinding, SkillRef
+from code_forge.contracts import (
+    DomainError,
+    ErrorCode,
+    RunRequest,
+    RunSnapshot,
+    SkillBinding,
+    SkillRef,
+    UserBinding,
+)
 from code_forge.ports import SnapshotResolver
-
 
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.S)
 
@@ -60,23 +68,29 @@ def _bundle_digest(root: Path) -> str:
 
 
 class ManualSkillResolver(SnapshotResolver):
-    """Reads skills/<name> and stores a full byte-for-byte immutable bundle."""
+    """Reads an ordered Skill root list and stores immutable byte-for-byte bundles."""
 
     def __init__(self, skills_root: str | Path, snapshot_root: str | Path):
         self.skills_root = Path(skills_root)
         self.snapshot_root = Path(snapshot_root)
         self.snapshot_root.mkdir(parents=True, exist_ok=True)
 
-    def list_skills(self) -> list[dict[str, Any]]:
-        if not self.skills_root.exists():
+    def list_skills(
+        self,
+        user_binding: UserBinding | None = None,
+        skill_paths: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        by_name: dict[str, dict[str, Any]] = {}
+        for source_kind, root in self._skill_roots(user_binding, skill_paths):
+            for item in self._list_root(root):
+                by_name.setdefault(item["name"], {**item, "source_kind": source_kind})
+        return [by_name[name] for name in sorted(by_name)]
+
+    def _list_root(self, root: Path) -> list[dict[str, Any]]:
+        if not root.exists():
             return []
         skills: list[dict[str, Any]] = []
-        for skill_dir in sorted(self.skills_root.iterdir()):
-            if not skill_dir.is_dir():
-                continue
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.is_file():
-                continue
+        for skill_dir in self._skill_dirs(root):
             try:
                 meta = self._read_skill(skill_dir)
             except DomainError:
@@ -87,9 +101,47 @@ class ManualSkillResolver(SnapshotResolver):
                     "version": meta["version"],
                     "digest": meta["digest"],
                     "description": meta.get("description", ""),
+                    "source_path": root.as_posix(),
                 }
             )
         return skills
+
+    def _skill_roots(
+        self,
+        binding: UserBinding | None,
+        skill_paths: tuple[str, ...] | None,
+    ) -> list[tuple[str, Path]]:
+        if binding is None:
+            return [("LEGACY", self.skills_root)]
+        if skill_paths is None:
+            return [("USER_DEFAULT", Path(binding.default_skill_path))]
+        roots: list[tuple[str, Path]] = []
+        for path in skill_paths:
+            root = Path(path)
+            source_kind = "DIRECT_PACKAGE" if (root / "SKILL.md").is_file() else "EXPLICIT"
+            roots.append((source_kind, root))
+        return roots
+
+    @staticmethod
+    def _skill_dirs(root: Path) -> list[Path]:
+        if (root / "SKILL.md").is_file():
+            return [root]
+        if not root.is_dir():
+            return []
+        return sorted(
+            child for child in root.iterdir() if child.is_dir() and (child / "SKILL.md").is_file()
+        )
+
+    @staticmethod
+    def _effective_paths(
+        binding: UserBinding | None,
+        skill_paths: tuple[str, ...] | None,
+    ) -> tuple[tuple[str, ...], str]:
+        if binding is None:
+            return (), "LEGACY"
+        if skill_paths is None:
+            return (binding.default_skill_path,), "USER_DEFAULT"
+        return skill_paths, "EXPLICIT"
 
     def _read_skill(self, skill_dir: Path) -> dict[str, Any]:
         skill_md = skill_dir / "SKILL.md"
@@ -116,8 +168,43 @@ class ManualSkillResolver(SnapshotResolver):
 
     async def resolve_and_store(self, request: RunRequest) -> RunSnapshot:
         resolved: dict[str, SkillRef] = {}
+        effective_paths, path_source = self._effective_paths(
+            request.context.user_binding,
+            request.skill_paths,
+        )
         for binding in request.skills:
-            self._resolve_skill_tree(binding, resolved, set())
+            self._resolve_skill_tree(
+                binding,
+                resolved,
+                set(),
+                request.context.user_binding,
+                request.skill_paths,
+            )
+        if (
+            request.context.user_binding is not None
+            and not request.skills
+            and request.skill_paths != ()
+        ):
+            for source_kind, root in self._skill_roots(
+                request.context.user_binding,
+                request.skill_paths,
+            ):
+                for skill_dir in self._skill_dirs(root):
+                    meta = self._read_skill(skill_dir)
+                    self._resolve_skill_tree(
+                        SkillBinding(name=meta["name"], version=meta["version"]),
+                        resolved,
+                        set(),
+                        request.context.user_binding,
+                        request.skill_paths,
+                    )
+                    if meta["name"] in resolved:
+                        resolved[meta["name"]] = replace(
+                            resolved[meta["name"]],
+                            source_kind=source_kind,
+                            source_path=root.as_posix(),
+                        )
+        path_digest = self._path_digest(request.context.user_binding, effective_paths)
         return RunSnapshot(
             agent_digest=hashlib.sha256(request.agent_ref.encode("utf-8")).hexdigest(),
             runtime_ref="runtime@local",
@@ -125,6 +212,10 @@ class ManualSkillResolver(SnapshotResolver):
             execution_profile_ref="local@1",
             skills=tuple(resolved.values()),
             tool_refs=("python", "command", "file_read", "file_write"),
+            user_binding=request.context.user_binding,
+            effective_skill_paths=effective_paths,
+            skill_path_source=path_source,
+            path_digest=path_digest,
         )
 
     def _resolve_skill_tree(
@@ -132,8 +223,10 @@ class ManualSkillResolver(SnapshotResolver):
         binding: SkillBinding,
         resolved: dict[str, SkillRef],
         visiting: set[str],
+        user_binding: UserBinding | None,
+        skill_paths: tuple[str, ...] | None,
     ) -> None:
-        meta = self._read_binding_meta(binding)
+        meta = self._read_binding_meta(binding, user_binding, skill_paths)
         name = meta["name"]
         if name in resolved:
             if resolved[name].version != meta["version"]:
@@ -153,15 +246,42 @@ class ManualSkillResolver(SnapshotResolver):
                 SkillBinding(name=dependency_name, version=None),
                 resolved,
                 visiting,
+                user_binding,
+                skill_paths,
             )
         visiting.remove(name)
-        resolved[name] = self._store_bundle(meta)
+        resolved[name] = self._store_bundle(meta, user_binding)
 
-    def _read_binding_meta(self, binding: SkillBinding) -> dict[str, Any]:
-        skill_dir = self.skills_root / binding.name
-        if not skill_dir.is_dir():
+    def _read_binding_meta(
+        self,
+        binding: SkillBinding,
+        user_binding: UserBinding | None,
+        skill_paths: tuple[str, ...] | None,
+    ) -> dict[str, Any]:
+        found: dict[str, Any] | None = None
+        for source_kind, root in self._skill_roots(user_binding, skill_paths):
+            if (root / "SKILL.md").is_file():
+                meta = self._read_skill(root)
+                if meta["name"] != binding.name:
+                    continue
+                found = {
+                    **meta,
+                    "source_kind": source_kind,
+                    "source_path": root.as_posix(),
+                }
+                break
+            skill_dir = root / binding.name
+            if not skill_dir.is_dir():
+                continue
+            found = {
+                **self._read_skill(skill_dir),
+                "source_kind": source_kind,
+                "source_path": root.as_posix(),
+            }
+            break
+        if found is None:
             raise DomainError(ErrorCode.SKILL_NOT_FOUND, f"Skill not found: {binding.name}")
-        meta = self._read_skill(skill_dir)
+        meta = found
         if binding.version and binding.version != meta["version"]:
             raise DomainError(
                 ErrorCode.SKILL_INCOMPATIBLE,
@@ -169,8 +289,22 @@ class ManualSkillResolver(SnapshotResolver):
             )
         return meta
 
-    def _store_bundle(self, meta: dict[str, Any]) -> SkillRef:
-        destination = self.snapshot_root / meta["digest"]
+    @staticmethod
+    def _path_digest(binding: UserBinding | None, skill_paths: tuple[str, ...]) -> str:
+        if binding is None:
+            return ""
+        encoded = "\0".join((binding.user_path, binding.project_path or "", *skill_paths)).encode(
+            "utf-8"
+        )
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _store_bundle(self, meta: dict[str, Any], user_binding: UserBinding | None) -> SkillRef:
+        snapshot_root = self.snapshot_root
+        if user_binding is not None:
+            snapshot_root = (
+                snapshot_root / hashlib.sha256(user_binding.scope_id.encode("utf-8")).hexdigest()
+            )
+        destination = snapshot_root / meta["digest"]
         if destination.exists():
             if not any(destination.iterdir()):
                 shutil.rmtree(destination)
@@ -191,6 +325,10 @@ class ManualSkillResolver(SnapshotResolver):
             version=meta["version"],
             digest=meta["digest"],
             bundle_ref=destination.as_posix(),
+            source_kind=meta.get("source_kind", "LEGACY"),
+            source_path=meta.get("source_path", ""),
+            user_ref=user_binding.user_ref if user_binding else "",
+            project_ref=user_binding.project_ref if user_binding else "",
         )
 
     def load_skill_body(self, skill_ref: SkillRef) -> str:

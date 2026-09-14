@@ -132,7 +132,7 @@ Use execute_python carefully.
         self.assertEqual(error.exception.code, ErrorCode.IDEMPOTENCY_CONFLICT)
 
     async def test_python_execution_commits_workspace_and_finishes(self):
-        run = await self._submit(
+        await self._submit(
             "```python\n"
             "from pathlib import Path\n"
             "value = sum(i * i for i in range(1, 101))\n"
@@ -162,7 +162,7 @@ Use execute_python carefully.
         self.assertIn("run.finished", event_types)
 
     async def test_no_model_returns_blocked_instead_of_fake_success(self):
-        run = await self._submit("请帮我完成一个没有代码块的普通任务")
+        await self._submit("请帮我完成一个没有代码块的普通任务")
         claimed = self.store.claim_next_run(
             "default",
             "test-worker",

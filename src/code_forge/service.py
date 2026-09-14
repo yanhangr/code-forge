@@ -26,7 +26,13 @@ class RunService:
         self.resolver = resolver
         self.authorization = authorization
 
-    async def submit(self, request: RunRequest, idempotency_key: str) -> AcceptedRun:
+    async def submit(
+        self,
+        request: RunRequest,
+        idempotency_key: str,
+        *,
+        reject_if_active: bool = False,
+    ) -> AcceptedRun:
         if not 1 <= len(idempotency_key) <= 200 or not 1 <= len(request.input) <= 100_000:
             raise DomainError(ErrorCode.INVALID_REQUEST, "Invalid request key or input size")
         await self.authorization.check(request.context, "run.submit", request.session_id)
@@ -44,4 +50,17 @@ class RunService:
         # Duplicate requests return before resolution: never pick up a newer Skill.
         snapshot = await self.resolver.resolve_and_store(request)
         # Repository owns concurrent dedupe and the all-or-nothing acceptance boundary.
-        return await self.repository.accept_once(request, idempotency_key, fingerprint, snapshot)
+        if reject_if_active:
+            return await self.repository.accept_once(
+                request,
+                idempotency_key,
+                fingerprint,
+                snapshot,
+                reject_if_active=True,
+            )
+        return await self.repository.accept_once(
+            request,
+            idempotency_key,
+            fingerprint,
+            snapshot,
+        )

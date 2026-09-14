@@ -16,17 +16,17 @@ from typing import Any
 from uuid import uuid4
 
 from code_forge.contracts import (
+    DomainError,
     EventType,
-    OperationSpec,
     RunStatus,
     SkillRef,
     TaskOutcome,
     ToolStatus,
 )
 from code_forge.execution.local_process_backend import LocalProcessBackend
+from code_forge.harness.tooling import build_operation_spec, persist_workspace_commit
 from code_forge.persistence.sqlite_store import SqliteRuntimeStore
 from code_forge.workspace.store import WorkspaceStore
-
 
 _PYTHON_BLOCK = re.compile(r"```(?:python|py)\s*\n(.*?)```", re.S)
 _SHELL_BLOCK = re.compile(r"```(?:bash|sh|shell)\s*\n(.*?)```", re.S)
@@ -59,8 +59,11 @@ class LocalDeterministicHarness:
         run_id = run["id"]
         attempt_id = claimed["attempt_id"]
         workspace_id = claimed["workspace_id"]
+        workspace_epoch = int(claimed.get("workspace_epoch", 0))
+        user_binding = claimed.get("user_binding")
+        working_directory = claimed.get("working_directory")
         actor = f"system:runtime/{self.worker_id}"
-        self.workspace.prepare_attempt(workspace_id, attempt_id)
+        self.workspace.prepare_attempt(workspace_id, attempt_id, user_binding)
         skill_context = self._activate_skills(run, actor)
 
         output_parts: list[str] = []
@@ -73,18 +76,24 @@ class LocalDeterministicHarness:
             if not current or current["status"] == RunStatus.CANCELLING.value:
                 break
             logical_key = f"{tool_ref}:{attempt_id}:{index}"
-            params_digest = hashlib.sha256(
-                (tool_ref + "\0" + code).encode("utf-8")
-            ).hexdigest()
+            params_digest = hashlib.sha256((tool_ref + "\0" + code).encode("utf-8")).hexdigest()
             input_ref = f"local-attempt:{attempt_id}:{logical_key}"
             if tool_ref == "python":
                 self.workspace.write_text(
-                    workspace_id, attempt_id, f"main_{index}.py", code
+                    workspace_id,
+                    attempt_id,
+                    f"main_{index}.py",
+                    code,
+                    user_binding,
                 )
                 argv = ("python3", f"main_{index}.py")
             elif tool_ref == "command":
                 self.workspace.write_text(
-                    workspace_id, attempt_id, f"command_{index}.sh", code
+                    workspace_id,
+                    attempt_id,
+                    f"command_{index}.sh",
+                    code,
+                    user_binding,
                 )
                 argv = ("/bin/bash", f"command_{index}.sh")
             else:
@@ -100,13 +109,17 @@ class LocalDeterministicHarness:
                 execution_profile_ref="local@1",
                 input_summary=f"{tool_ref} block {index}",
                 actor=actor,
+                workspace_id=workspace_id,
             )
             self.store.start_tool(scope_id, operation_id, actor)
-            spec = OperationSpec(
+            spec = build_operation_spec(
                 operation_id=operation_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
-                workspace_ref=workspace_id,
+                workspace_id=workspace_id,
+                workspace_epoch=workspace_epoch,
+                user_binding=user_binding,
+                working_directory=working_directory,
                 argv=argv,
                 timeout_seconds=30,
                 output_limit_bytes=256 * 1024,
@@ -115,17 +128,39 @@ class LocalDeterministicHarness:
             await self.execution.submit(spec)
             result = await self._wait_for_operation(operation_id)
             self._emit_tool_logs(scope_id, operation_id, result, actor)
-            if result.status == ToolStatus.SUCCEEDED:
+            tool_status = result.status
+            tool_error = None
+            result_revision_id = None
+            if tool_status == ToolStatus.SUCCEEDED:
+                try:
+                    commit = persist_workspace_commit(
+                        self.store,
+                        result,
+                        scope_id=scope_id,
+                        workspace_id=workspace_id,
+                        attempt_id=attempt_id,
+                        workspace_epoch=workspace_epoch,
+                        actor=actor,
+                    )
+                except DomainError as exc:
+                    tool_status = ToolStatus.FAILED
+                    tool_error = {"code": exc.code.value, "message": exc.message}
+                else:
+                    result_revision_id = commit.revision_id if commit is not None else None
+            if tool_status == ToolStatus.SUCCEEDED:
                 tool_successes += 1
                 stdout_text = self._read_log(result.stdout_ref)
                 if stdout_text.strip():
                     output_parts.append(stdout_text.strip())
-                if result.workspace_revision:
+                if result_revision_id:
                     self.store.append_event(
                         scope_id,
                         run_id,
                         EventType.WORKSPACE_COMMITTED,
-                        {"revision_id": result.workspace_revision, "changed_paths": []},
+                        {
+                            "revision_id": result_revision_id,
+                            "changed_paths": list(result.changed_paths),
+                        },
                         actor,
                     )
             else:
@@ -133,16 +168,21 @@ class LocalDeterministicHarness:
                 stderr_text = self._read_log(result.stderr_ref)
                 if stderr_text.strip():
                     output_parts.append(stderr_text.strip())
+                if tool_error is None:
+                    tool_error = {
+                        "code": (
+                            result.error_code.value if result.error_code else "EXECUTION_FAILED"
+                        ),
+                        "message": self._read_log(result.stderr_ref).strip() or "Tool failed",
+                    }
             self.store.finish_tool(
                 scope_id,
                 operation_id,
-                result.status,
+                tool_status,
                 result.stdout_ref,
-                None if result.status != ToolStatus.FAILED else {
-                    "code": (result.error_code.value if result.error_code else "EXECUTION_FAILED"),
-                    "message": self._read_log(result.stderr_ref).strip() or "Tool failed",
-                },
+                tool_error,
                 actor,
+                result_revision_id,
             )
 
         if not actions:
@@ -151,6 +191,9 @@ class LocalDeterministicHarness:
                     run,
                     attempt_id,
                     workspace_id,
+                    workspace_epoch,
+                    user_binding,
+                    working_directory,
                     actor,
                     skill_context,
                 )
@@ -196,6 +239,9 @@ class LocalDeterministicHarness:
         run: dict[str, Any],
         attempt_id: str,
         workspace_id: str,
+        workspace_epoch: int,
+        user_binding: Any,
+        working_directory: str | None,
         actor: str,
         skill_context: list[str],
     ) -> tuple[str, TaskOutcome]:
@@ -228,6 +274,9 @@ class LocalDeterministicHarness:
                         run,
                         attempt_id,
                         workspace_id,
+                        workspace_epoch,
+                        user_binding,
+                        working_directory,
                         "python",
                         code,
                         arguments.get("skill") or "analysis-report",
@@ -239,6 +288,9 @@ class LocalDeterministicHarness:
                         run,
                         attempt_id,
                         workspace_id,
+                        workspace_epoch,
+                        user_binding,
+                        working_directory,
                         "command",
                         command,
                         arguments.get("skill") or "analysis-report",
@@ -248,10 +300,14 @@ class LocalDeterministicHarness:
                     status = ToolStatus.FAILED
                     stdout_text = ""
                     stderr_text = f"Unsupported tool: {tool_name}"
-                content = stdout_text or stderr_text or (
-                    "Tool executed successfully."
-                    if status == ToolStatus.SUCCEEDED
-                    else "Tool failed."
+                content = (
+                    stdout_text
+                    or stderr_text
+                    or (
+                        "Tool executed successfully."
+                        if status == ToolStatus.SUCCEEDED
+                        else "Tool failed."
+                    )
                 )
                 messages.append(
                     {
@@ -302,6 +358,9 @@ class LocalDeterministicHarness:
         run: dict[str, Any],
         attempt_id: str,
         workspace_id: str,
+        workspace_epoch: int,
+        user_binding: Any,
+        working_directory: str | None,
         tool_ref: str,
         code: str,
         skill_name: str,
@@ -317,11 +376,23 @@ class LocalDeterministicHarness:
         input_ref = f"local-attempt:{attempt_id}:{logical_key}"
         if tool_ref == "python":
             filename = f"model_{uuid4().hex}.py"
-            self.workspace.write_text(workspace_id, attempt_id, filename, code)
+            self.workspace.write_text(
+                workspace_id,
+                attempt_id,
+                filename,
+                code,
+                user_binding,
+            )
             argv = ("python3", filename)
         elif tool_ref == "command":
             filename = f"model_{uuid4().hex}.sh"
-            self.workspace.write_text(workspace_id, attempt_id, filename, code)
+            self.workspace.write_text(
+                workspace_id,
+                attempt_id,
+                filename,
+                code,
+                user_binding,
+            )
             argv = ("/bin/bash", filename)
         else:
             return ToolStatus.FAILED, "", f"Unsupported tool: {tool_ref}"
@@ -336,6 +407,7 @@ class LocalDeterministicHarness:
             execution_profile_ref="local@1",
             input_summary=f"model {tool_ref} call",
             actor=actor,
+            workspace_id=workspace_id,
         )
         self.store.start_tool(run["scope_id"], operation_id, actor)
         self.store.append_event(
@@ -349,11 +421,14 @@ class LocalDeterministicHarness:
             },
             actor,
         )
-        spec = OperationSpec(
+        spec = build_operation_spec(
             operation_id=operation_id,
             run_id=run["id"],
             attempt_id=attempt_id,
-            workspace_ref=workspace_id,
+            workspace_id=workspace_id,
+            workspace_epoch=workspace_epoch,
+            user_binding=user_binding,
+            working_directory=working_directory,
             argv=argv,
             timeout_seconds=30,
             output_limit_bytes=256 * 1024,
@@ -362,28 +437,53 @@ class LocalDeterministicHarness:
         await self.execution.submit(spec)
         result = await self._wait_for_operation(operation_id)
         self._emit_tool_logs(run["scope_id"], operation_id, result, actor)
-        if result.status == ToolStatus.SUCCEEDED and result.workspace_revision:
-            self.store.append_event(
-                run["scope_id"],
-                run["id"],
-                EventType.WORKSPACE_COMMITTED,
-                {"revision_id": result.workspace_revision, "changed_paths": []},
-                actor,
-            )
+        tool_status = result.status
+        tool_error = None
+        result_revision_id = None
+        if tool_status == ToolStatus.SUCCEEDED:
+            try:
+                commit = persist_workspace_commit(
+                    self.store,
+                    result,
+                    scope_id=run["scope_id"],
+                    workspace_id=workspace_id,
+                    attempt_id=attempt_id,
+                    workspace_epoch=workspace_epoch,
+                    actor=actor,
+                )
+            except DomainError as exc:
+                tool_status = ToolStatus.FAILED
+                tool_error = {"code": exc.code.value, "message": exc.message}
+            else:
+                result_revision_id = commit.revision_id if commit is not None else None
+                if result_revision_id:
+                    self.store.append_event(
+                        run["scope_id"],
+                        run["id"],
+                        EventType.WORKSPACE_COMMITTED,
+                        {
+                            "revision_id": result_revision_id,
+                            "changed_paths": list(result.changed_paths),
+                        },
+                        actor,
+                    )
+        if tool_status != ToolStatus.SUCCEEDED and tool_error is None:
+            tool_error = {
+                "code": result.error_code.value if result.error_code else "EXECUTION_FAILED",
+                "message": self._read_log(result.stderr_ref).strip() or "Tool failed",
+            }
         self.store.finish_tool(
             run["scope_id"],
             operation_id,
-            result.status,
+            tool_status,
             result.stdout_ref,
-            None if result.status != ToolStatus.FAILED else {
-                "code": result.error_code.value if result.error_code else "EXECUTION_FAILED",
-                "message": self._read_log(result.stderr_ref).strip() or "Tool failed",
-            },
+            tool_error,
             actor,
+            result_revision_id,
         )
         skill_finished_status = (
-            result.status.value
-            if result.status in {ToolStatus.SUCCEEDED, ToolStatus.FAILED, ToolStatus.CANCELLED}
+            tool_status.value
+            if tool_status in {ToolStatus.SUCCEEDED, ToolStatus.FAILED, ToolStatus.CANCELLED}
             else ToolStatus.FAILED.value
         )
         self.store.append_event(
@@ -399,7 +499,7 @@ class LocalDeterministicHarness:
             actor,
         )
         return (
-            result.status,
+            tool_status,
             self._read_log(result.stdout_ref).strip(),
             self._read_log(result.stderr_ref).strip(),
         )

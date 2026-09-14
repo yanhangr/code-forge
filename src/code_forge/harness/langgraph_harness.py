@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from pathlib import Path
 from operator import add
+from pathlib import Path
 from typing import Annotated, Any, TypedDict
 from uuid import uuid4
 
@@ -22,7 +22,6 @@ from code_forge.contracts import (
     DomainError,
     ErrorCode,
     EventType,
-    OperationSpec,
     RunStatus,
     SkillRef,
     TaskOutcome,
@@ -30,6 +29,7 @@ from code_forge.contracts import (
 )
 from code_forge.execution.local_process_backend import LocalProcessBackend
 from code_forge.harness.context import ConversationContextManager
+from code_forge.harness.tooling import build_operation_spec, persist_workspace_commit
 from code_forge.persistence.sqlite_store import SqliteRuntimeStore
 from code_forge.workspace.store import WorkspaceStore
 
@@ -39,6 +39,9 @@ class HarnessState(TypedDict, total=False):
     run: dict[str, Any]
     attempt_id: str
     workspace_id: str
+    workspace_epoch: int
+    user_binding: Any
+    working_directory: str | None
     actor: str
 
 
@@ -85,8 +88,11 @@ class LangGraphHarness:
         run_id = run["id"]
         attempt_id = claimed["attempt_id"]
         workspace_id = claimed["workspace_id"]
+        workspace_epoch = int(claimed.get("workspace_epoch", 0))
+        user_binding = claimed.get("user_binding")
+        working_directory = claimed.get("working_directory")
         actor = f"system:runtime/{self.worker_id}"
-        self.workspace.prepare_attempt(workspace_id, attempt_id)
+        self.workspace.prepare_attempt(workspace_id, attempt_id, user_binding)
         skill_context = self._activate_skills(run, actor)
 
         messages = self.context_manager.build(
@@ -99,6 +105,9 @@ class LangGraphHarness:
             "run": run,
             "attempt_id": attempt_id,
             "workspace_id": workspace_id,
+            "workspace_epoch": workspace_epoch,
+            "user_binding": user_binding,
+            "working_directory": working_directory,
             "actor": actor,
         }
         try:
@@ -299,6 +308,9 @@ class LangGraphHarness:
         run = state["run"]
         attempt_id = state["attempt_id"]
         workspace_id = state["workspace_id"]
+        workspace_epoch = int(state.get("workspace_epoch", 0))
+        user_binding = state.get("user_binding")
+        working_directory = state.get("working_directory")
         actor = state["actor"]
         function = call.get("function") or {}
         tool_name = function.get("name", "")
@@ -311,6 +323,9 @@ class LangGraphHarness:
                 run,
                 attempt_id,
                 workspace_id,
+                workspace_epoch,
+                user_binding,
+                working_directory,
                 "python",
                 arguments.get("code", ""),
                 arguments.get("skill") or "analysis-report",
@@ -321,6 +336,9 @@ class LangGraphHarness:
                 run,
                 attempt_id,
                 workspace_id,
+                workspace_epoch,
+                user_binding,
+                working_directory,
                 "command",
                 arguments.get("command", ""),
                 arguments.get("skill") or "analysis-report",
@@ -333,6 +351,9 @@ class LangGraphHarness:
         run: dict[str, Any],
         attempt_id: str,
         workspace_id: str,
+        workspace_epoch: int,
+        user_binding: Any,
+        working_directory: str | None,
         tool_ref: str,
         code: str,
         skill_name: str,
@@ -348,11 +369,23 @@ class LangGraphHarness:
         input_ref = f"local-attempt:{attempt_id}:{logical_key}"
         if tool_ref == "python":
             filename = f"model_{uuid4().hex}.py"
-            self.workspace.write_text(workspace_id, attempt_id, filename, code)
+            self.workspace.write_text(
+                workspace_id,
+                attempt_id,
+                filename,
+                code,
+                user_binding,
+            )
             argv = ("python3", filename)
         elif tool_ref == "command":
             filename = f"model_{uuid4().hex}.sh"
-            self.workspace.write_text(workspace_id, attempt_id, filename, code)
+            self.workspace.write_text(
+                workspace_id,
+                attempt_id,
+                filename,
+                code,
+                user_binding,
+            )
             argv = ("/bin/bash", filename)
         else:
             return f"Unsupported tool: {tool_ref}"
@@ -367,6 +400,7 @@ class LangGraphHarness:
             execution_profile_ref="local@1",
             input_summary=f"langgraph {tool_ref} call",
             actor=actor,
+            workspace_id=workspace_id,
         )
         self.store.start_tool(run["scope_id"], operation_id, actor)
         self.store.append_event(
@@ -380,11 +414,14 @@ class LangGraphHarness:
             },
             actor,
         )
-        spec = OperationSpec(
+        spec = build_operation_spec(
             operation_id=operation_id,
             run_id=run["id"],
             attempt_id=attempt_id,
-            workspace_ref=workspace_id,
+            workspace_id=workspace_id,
+            workspace_epoch=workspace_epoch,
+            user_binding=user_binding,
+            working_directory=working_directory,
             argv=argv,
             timeout_seconds=30,
             output_limit_bytes=256 * 1024,
@@ -403,28 +440,53 @@ class LangGraphHarness:
                     len(text) > 8192,
                     actor,
                 )
-        if result.status == ToolStatus.SUCCEEDED and result.workspace_revision:
-            self.store.append_event(
-                run["scope_id"],
-                run["id"],
-                EventType.WORKSPACE_COMMITTED,
-                {"revision_id": result.workspace_revision, "changed_paths": []},
-                actor,
-            )
+        tool_status = result.status
+        tool_error = None
+        result_revision_id = None
+        if tool_status == ToolStatus.SUCCEEDED:
+            try:
+                commit = persist_workspace_commit(
+                    self.store,
+                    result,
+                    scope_id=run["scope_id"],
+                    workspace_id=workspace_id,
+                    attempt_id=attempt_id,
+                    workspace_epoch=workspace_epoch,
+                    actor=actor,
+                )
+            except DomainError as exc:
+                tool_status = ToolStatus.FAILED
+                tool_error = {"code": exc.code.value, "message": exc.message}
+            else:
+                result_revision_id = commit.revision_id if commit is not None else None
+                if result_revision_id:
+                    self.store.append_event(
+                        run["scope_id"],
+                        run["id"],
+                        EventType.WORKSPACE_COMMITTED,
+                        {
+                            "revision_id": result_revision_id,
+                            "changed_paths": list(result.changed_paths),
+                        },
+                        actor,
+                    )
+        if tool_status != ToolStatus.SUCCEEDED and tool_error is None:
+            tool_error = {
+                "code": result.error_code.value if result.error_code else "EXECUTION_FAILED",
+                "message": self._read_log(result.stderr_ref).strip() or "Tool failed",
+            }
         self.store.finish_tool(
             run["scope_id"],
             operation_id,
-            result.status,
+            tool_status,
             result.stdout_ref,
-            None if result.status != ToolStatus.FAILED else {
-                "code": result.error_code.value if result.error_code else "EXECUTION_FAILED",
-                "message": self._read_log(result.stderr_ref).strip() or "Tool failed",
-            },
+            tool_error,
             actor,
+            result_revision_id,
         )
         skill_finished_status = (
-            result.status.value
-            if result.status in {ToolStatus.SUCCEEDED, ToolStatus.FAILED, ToolStatus.CANCELLED}
+            tool_status.value
+            if tool_status in {ToolStatus.SUCCEEDED, ToolStatus.FAILED, ToolStatus.CANCELLED}
             else ToolStatus.FAILED.value
         )
         self.store.append_event(
@@ -441,10 +503,14 @@ class LangGraphHarness:
         )
         stdout_text = self._read_log(result.stdout_ref).strip()
         stderr_text = self._read_log(result.stderr_ref).strip()
-        return stdout_text or stderr_text or (
-            "Tool executed successfully."
-            if result.status == ToolStatus.SUCCEEDED
-            else "Tool failed."
+        return (
+            stdout_text
+            or stderr_text
+            or (
+                "Tool executed successfully."
+                if result.status == ToolStatus.SUCCEEDED
+                else "Tool failed."
+            )
         )
 
     @staticmethod

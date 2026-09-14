@@ -1,6 +1,6 @@
 # Agent Runtime 详细设计与实现约束
 
-版本：0.4；日期：2026-09-10；状态：架构交接稿，待架构评审后由实现智能体落实。
+版本：0.5；日期：2026-09-12；状态：用户级数据领域修订已进入本地 Runtime 实现。
 
 本轮交付核心契约、状态逻辑、接受任务参考代码、PostgreSQL DDL、OpenAPI 和实现说明。没有交付运行中的 Agent 服务或 Platform。核心单元测试通过不等于 Deep Agents、数据库、Python 执行或端到端流程已集成通过。
 
@@ -57,17 +57,17 @@ flowchart TB
     T -. 后续 .-> B[SandboxBackend]
 ```
 
-Platform 通过 HTTP/SSE 访问 Runtime，不直接读数据库、文件目录或框架 checkpoint。默认验证阶段 scope 为 default，保留 actor_ref/external_ref 供未来上层关联，当前无需显示登录或审批。
+Platform 通过 HTTP/SSE 访问 Runtime，不直接读数据库、文件目录或框架 checkpoint。Platform 管理 Tenant/User/Project 并下发已授权的 `UserBinding`；Runtime 以 user_ref 作为 scope_id，以 Platform 下发且校验过的 user_path 作为用户隔离基准，以 user_path 下的 project_path 作为 Agent 固定执行根。所有绑定和本次 Run 的有效 Skill 路径在接受时冻结。
 
 Runtime 角色合并部署不等于只用内存队列。持久 Run 是队列事实来源，每个执行者有 worker_id；多副本时仍需原子领取和租约。首个本地主流程里程碑可单副本验证，多副本恢复必须另行通过相应验收才标记完成。
 
 ## 4. 核心领域与存储
 
-Session 对应一个持久框架 thread_id 和一个独立可写 Workspace。Run 表示一次被接受的输入；Attempt 表示一次实际执行/接管。配置快照固定在接受时，工作区起点在取得写入权时固定。普通后续输入创建新 Run，澄清回应恢复原 Run。
+Session 对应一个持久框架 thread_id；每个 Project 对应一个 Workspace，多个 Session 可以共享该 Workspace。Run 表示一次被接受的输入；Attempt 表示一次实际执行/接管。配置快照固定在接受时，工作区起点在取得 Workspace writer lease 时固定。普通后续输入创建新 Run，澄清回应恢复原 Run。
 
 表的职责：
 
-- workspaces / workspace_revisions：稳定文件位置、已提交修订与 manifest，保留父修订链。
+- workspaces / workspace_revisions：Platform 路径绑定、Workspace writer lease、已提交修订与 manifest，保留父修订链。
 - sessions / session_requests：会话、Workspace/Thread 映射，以及创建会话的幂等请求。
 - runs：输入、请求摘要、配置快照、顺序、状态版本、输出和下一事件序号。
 - run_attempts：当前执行者、Session 递增 epoch、租约、工作区起点与 checkpoint 引用。
@@ -75,7 +75,7 @@ Session 对应一个持久框架 thread_id 和一个独立可写 Workspace。Run
 - pending_responses：信息澄清、结果核验；approval 类型仅预留，不开发审批产品。
 - run_events：可持久回放的事件；artifacts：生成结果引用与来源，专用展示后置。
 
-所有业务资源按 scope_id 关联，复合外键防止跨作用域误绑。不能仅凭随机 ID 作为将来的访问授权。当前 default allow 是显式部署模式，并不代表已经完成生产认证。
+所有业务资源按 scope_id=user_ref 关联，复合外键防止跨用户误绑。`user_path` 是用户隔离基准，`project_path` 必须位于其下并作为 Agent 可写根。Skill 不隶属于 Workspace：缺省使用 `user_path/config/skills`，Platform 可在 Run 请求中传多个显式路径覆盖该缺省值。不能仅凭随机 ID 作为将来的访问授权；当前 default allow 是可信验证模式，路径逻辑隔离不构成文件系统安全边界。
 
 字段映射、统一锁顺序和各事务写入边界见 [数据库实现说明](database.md)。
 
@@ -89,17 +89,17 @@ SQL 对唯一请求键、Session 顺序及结果状态做约束；唯一主任�
 
 参考 RunService 的顺序：校验请求 → 授权接口 → 确认 Session → 查同键已有请求 → 解析并保存不可变快照 → Repository.accept_once。
 
-accept_once 必须在一个事务中再次检查唯一请求、锁定 Session、分配 run_seq、写输入/快照/QUEUED Run、分配 seq 并写 run.accepted。提交成功后才响应 202。并发同键同摘要返回同一 Run，不能多分配序号或覆盖快照；同键不同摘要返回 IDEMPOTENCY_CONFLICT。
+accept_once 必须在一个事务中再次检查唯一请求、验证 UserBinding 与 Session Workspace 一致、锁定 Session、分配 run_seq、写输入/冻结快照/QUEUED Run、分配 seq 并写 run.accepted。提交成功后才响应 202。并发同键同摘要返回同一 Run；同键不同用户路径、显式 Skill 路径或其他请求内容返回 IDEMPOTENCY_CONFLICT。
 
 快照解析可能有文件 I/O，不长时间持有 Session 锁。已解析未被引用的包由延后清理处理；不能以跨文件/数据库事务为由先响应接受再保存内容。
 
 ### 5.2 领取与执行
 
-调度器读取已到期 QUEUED 候选，用短事务锁 Session/Run，验证是队列顺序允许的任务。初次执行设置 active_run_id；恢复任务须与该归属一致。分配 Session.execution_epoch、创建 Attempt、保存 Workspace 起点并转 RUNNING，提交 run.started。
+调度器读取已到期 QUEUED 候选，按 Workspace -> Session -> Run -> Attempt 的顺序处理，验证 Session 队列和 Workspace writer lease。领取时增加 Workspace execution_epoch，固定 workspace_base_revision、mount_spec_ref 与 working_directory_ref，转 RUNNING 并提交 run.started。
 
 同 Session 写操作串行；不同 Session 可在配置并发额度内运行。长模型 I/O 采用非阻塞调用或受管理执行资源，不能卡住 API/心跳。Python 在子进程运行，不在 Worker Python 进程内 eval/exec。
 
-正常结束前提交完整回复、任务结果和文件引用。SUCCEEDED 是执行协议正常结束，task_outcome 分为 completed/partial/blocked；测试证据另行报告。CANCELLING 的任务不能竞争写成 SUCCEEDED。终态后释放 Session 归属和 Attempt，下一 Run 才可开始。
+正常结束前提交完整回复、任务结果、Workspace revision 和文件引用。SUCCEEDED 是执行协议正常结束，task_outcome 分为 completed/partial/blocked；测试证据另行报告。CANCELLING 的任务不能竞争写成 SUCCEEDED。终态后释放 Session 归属、Workspace lease 和 Attempt，下一 Run 才可开始。
 
 ## 6. 状态、CAS 和恢复边界
 
@@ -131,12 +131,12 @@ accept_once 必须在一个事务中再次检查唯一请求、锁定 Session、
 
 ## 8. LocalProcessBackend 的实现要求
 
-[ExecutionBackend](../src/code_forge/ports.py)定义 capabilities/submit/get_status/cancel/release。一期能力包括 python、command；以后沙箱实现同一接口。OperationSpec 传命令参数、工作区引用、超时/输出限制和环境 profile，不能把真实凭据塞进 checkpoint 或公开事件。
+[ExecutionBackend](../src/code_forge/ports.py)定义 capabilities/submit/get_status/cancel/release。一期能力包括 python、command；以后沙箱实现同一接口。OperationSpec 传 UserBinding、workspace_epoch、MountSpec、固定 working_directory、命令参数、超时/输出限制和环境 profile，不能把真实凭据塞进 checkpoint 或公开事件。
 
 必须落实：
 
 1. Python 使用明确的解释器和 argv 启动子进程；普通 shell 为显式工具，不自动把 Python 文本插进 shell 字符串。
-2. 每 Attempt 独立工作目录。设置超时、并发、输出上限与最小环境；避免把模型 API Key 等运行服务环境变量整包继承给子进程。
+2. Platform 已下发绑定时，Agent 固定使用 `project_path` 作为工作根，并校验 working_directory 仍在该 project_path 下；legacy 模式继续使用 Attempt 目录。设置超时、并发、输出上限与最小环境，避免把模型 API Key 等运行服务环境变量整包继承给子进程。
 3. stdout/stderr 分流、有界缓存、完整日志按限额保存。输出很大时继续排空或终止，不因管道堵塞卡住 API。
 4. 管理进程组和子孙进程，取消/超时时终止整个本次操作进程组并核验退出，不能只杀父 PID。
 5. 记录主机/启动实例、PID 与创建时间等核验信息，PID 不单独充当永久操作 ID。Runtime 重启可能留有孤儿进程，不在未核验前自动重跑或随意杀一个复用 PID。
@@ -157,7 +157,7 @@ accept_once 必须在一个事务中再次检查唯一请求、锁定 Session、
 
 ## 10. 最小 Platform
 
-当前只实现：Runtime 健康/模型配置状态、创建与选择会话、输入任务、选择手工 Skill、展示流式消息和工具进展、取消、刷新后重连、继续会话、必要的信息澄清输入。
+当前只实现：Runtime 健康/模型配置状态、受信 UserBinding 输入、创建与选择会话、输入任务、选择手工 Skill、展示流式消息和工具进展、取消、刷新后重连、继续会话、必要的信息澄清输入。
 
 不实现 Skill 编辑发布、权限/角色后台、审批工作流、报告预览器和文件管理器。Runtime 可先返回文件名/产物引用，Platform 原样展示文本即可。
 
@@ -165,7 +165,7 @@ Platform 不内置 Agent，也不调用 Python。只消费 [OpenAPI](api/openapi
 
 ## 11. 接口演进与实现移交
 
-一期平台管理缺省值：scope=default，权限=DefaultAllowAuthorization，Skill=手工目录，执行=LocalProcessBackend。每项都有明确接口替换位置，不为了未来扩展先实现对应产品。
+一期平台管理缺省值：legacy scope=default，受信调用方可下发 UserBinding；权限=DefaultAllowAuthorization，Skill 缺省来自 User 的 `config/skills`，Platform 可传多个显式 Skill 路径覆盖，执行=LocalProcessBackend。每项都有明确接口替换位置，不为了未来扩展先实现对应产品。
 
 OpenAPI v1 的字段名/状态/错误码/事件 payload 为跨智能体合作契约。新增可选字段应保持旧客户端行为；删除/改名/改类型或改变幂等范围属于不兼容变更。新增状态或事件必须同步核心枚举、生成文件、DDL/迁移、示例与测试，并经架构确认。
 

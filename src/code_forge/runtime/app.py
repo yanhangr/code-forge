@@ -11,7 +11,6 @@ from typing import Any
 from code_forge.contracts import (
     ExecutionContext,
     RunRequest,
-    RunStatus,
     SkillBinding,
 )
 from code_forge.ports import (
@@ -70,7 +69,7 @@ class AgentRuntime:
     async def _worker_loop(self) -> None:
         while not self._stop.is_set():
             claimed = self.store.claim_next_run(
-                "default",
+                None,
                 self.worker_id,
                 self.lease_seconds,
                 datetime.now(timezone.utc),
@@ -97,7 +96,10 @@ class AgentRuntime:
             context,
         )
         assert session is not None
-        self.workspace.ensure_workspace(session["workspace_id"])
+        self.workspace.ensure_workspace(
+            session["workspace_id"],
+            context.user_binding,
+        )
         return session
 
     def submit_run(
@@ -107,8 +109,10 @@ class AgentRuntime:
         input_text: str,
         agent_ref: str,
         skills: tuple[SkillBinding, ...],
+        skill_paths: tuple[str, ...] | None,
         idempotency_key: str,
         context: ExecutionContext,
+        reject_if_active: bool = False,
     ) -> dict[str, Any]:
         request = RunRequest(
             session_id=session_id,
@@ -116,8 +120,15 @@ class AgentRuntime:
             agent_ref=agent_ref,
             skills=skills,
             context=context,
+            skill_paths=skill_paths,
         )
-        accepted = asyncio.run(self.service.submit(request, idempotency_key))
+        accepted = asyncio.run(
+            self.service.submit(
+                request,
+                idempotency_key,
+                reject_if_active=reject_if_active,
+            )
+        )
         return asdict(accepted)
 
     def cancel_run(self, scope_id: str, run_id: str) -> dict[str, Any]:

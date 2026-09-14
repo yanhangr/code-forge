@@ -8,10 +8,11 @@
 
 1. [需求与已确认决策](requirements.md)
 2. [详细设计](docs/detailed-design.md)、[完整流程与分支](docs/agent-workflow.md)、[逐分支测试用例](docs/testing/agent-workflow-cases.md)
-3. [Platform 接入约定](docs/api/platform-runtime.md) 与 [OpenAPI](docs/api/openapi.json)
+3. [Platform ↔ Agent Runtime 接口规范](docs/api/platform-runtime.md) 与 [OpenAPI](docs/api/openapi.json)
 4. [PostgreSQL 表结构](db/migrations/001_runtime.sql) 与 [事务/字段映射](docs/database.md)
-5. [核心契约](src/code_forge/contracts.py)、[状态机](src/code_forge/state_machine.py)、[接受流程](src/code_forge/service.py)、[可替换接口](src/code_forge/ports.py)
-6. [代码目录与设计规范](docs/coding-standards.md) 和 [实现任务包与验收规则](docs/implementation-guide.md)
+5. [Agent 流程与数据落点（As-Is）](docs/agent-data-lifecycle.md)
+6. [核心契约](src/code_forge/contracts.py)、[状态机](src/code_forge/state_machine.py)、[接受流程](src/code_forge/service.py)、[可替换接口](src/code_forge/ports.py)
+7. [代码目录与设计规范](docs/coding-standards.md) 和 [实现任务包与验收规则](docs/implementation-guide.md)
 
 ## 核心验证
 
@@ -23,7 +24,7 @@ PYTHONPATH=src python3 scripts/export_contracts.py
 python3 scripts/export_workflow_cases.py
 ```
 
-测试覆盖状态不变量、幂等接受顺序、契约一致性，以及 SQLite/Skill 快照/本机子进程/HTTP 冒烟链路。测试替身不证明 PostgreSQL 并发、真实模型或 Deep Agents/LangGraph 主流程已经集成成功；DDL 尚未在 PostgreSQL 实例执行。详见 [本轮验证记录](docs/verification.md)。
+测试覆盖状态不变量、幂等接受顺序、契约一致性、SQLite v1→v4 迁移、平台 Session/Message 接口、Session 级事件游标、用户默认/显式多 Skill 路径、Skill 快照和本机子进程链路。测试替身不证明 PostgreSQL 并发、真实模型或 Deep Agents/LangGraph 主流程已经集成成功；DDL 尚未在 PostgreSQL 实例执行。详见 [本轮验证记录](docs/verification.md)。
 
 ## 本地验证入口
 
@@ -67,13 +68,13 @@ python3 scripts/run_runtime.py --port 8000
 python3 scripts/run_platform.py --port 8001
 ```
 
-Runtime API 是 `http://127.0.0.1:8000`，页面是 `http://127.0.0.1:8001`。只启动 `run_platform.py` 会显示 Runtime 不可达。页面支持历史 Session、Run 列表、用户/模型消息、流式 `message.delta`、工具/Skill 执行轨迹和 Workspace 文件查看。
+Runtime API 是 `http://127.0.0.1:8000`，页面是 `http://127.0.0.1:8001`。只启动 `run_platform.py` 会显示 Runtime 不可达。页面支持历史 Session、Message 历史、流式 `message.delta`、工具/Skill 执行轨迹、澄清回复和 Workspace 文件查看。
 
 插件选择与替换边界见 [Runtime 插件架构](docs/plugin-architecture.md)。可通过 `FORGE_STORE`、`FORGE_EXECUTION`、`FORGE_CONTEXT`、`FORGE_MODEL`、`FORGE_HARNESS` 等环境变量切换实现。
 
 ## 当前实现边界
 
-已有核心代码、架构文档、标准库 HTTP/SSE 服务、SQLite 存储、手工 Skill 快照、LocalProcessBackend、确定性本地 Harness、后台 Worker 和最小 Platform。
+已有核心代码、架构文档、标准库 HTTP/SSE 服务、SQLite schema v4、手工 Skill 快照、LocalProcessBackend、确定性本地 Harness、后台 Worker 和最小 Platform。Platform 只使用 Session/Message 动作型接口；Runtime 以用户 `config/skills` 为默认 Skill 根、按 Message 接受显式多路径覆盖，并以项目路径作为 Agent 固定执行根，在 Workspace 级 lease 内发布文件修订。公开事件使用 Session 级序号，不暴露内部 Run ID。
 
 已有 LangGraph + DeepSeek 真实模型工具循环和本地 SQLite 多轮会话存储。待实现真实 PostgreSQL Repository/migration runner、Deep Agents 可选增强、未知结果核验、多副本恢复与沙箱。Skill 编辑发布、权限后台、审批、文件/报告专用展示仍后置。默认权限与本机子进程仅适用于可信验证，不能宣称生产多租户隔离。
 

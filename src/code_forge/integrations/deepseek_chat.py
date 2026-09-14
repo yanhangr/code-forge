@@ -31,10 +31,16 @@ class DeepSeekChatAdapter:
     ):
         self.api_key = api_key
         self.model = model or os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-pro")
-        self.base_url = (base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")).rstrip("/")
+        self.base_url = (
+            base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        ).rstrip("/")
         self.timeout_seconds = timeout_seconds
         if verify_ssl is None:
-            verify_ssl = os.environ.get("DEEPSEEK_VERIFY_SSL", "1").lower() not in {"0", "false", "no"}
+            verify_ssl = os.environ.get("DEEPSEEK_VERIFY_SSL", "1").lower() not in {
+                "0",
+                "false",
+                "no",
+            }
         self.verify_ssl = verify_ssl
 
     async def complete(
@@ -92,7 +98,9 @@ class DeepSeekChatAdapter:
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
-            raise DomainError(ErrorCode.DEPENDENCY_UNAVAILABLE, "DeepSeek returned invalid JSON") from exc
+            raise DomainError(
+                ErrorCode.DEPENDENCY_UNAVAILABLE, "DeepSeek returned invalid JSON"
+            ) from exc
         try:
             return data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:

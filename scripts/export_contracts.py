@@ -5,7 +5,16 @@ Run: PYTHONPATH=src python3 scripts/export_contracts.py
 import json
 from pathlib import Path
 
-from code_forge.contracts import ErrorCode, EventType, RunStatus, TaskOutcome, ToolStatus
+from code_forge.contracts import (
+    BusinessCode,
+    ErrorCode,
+    EventType,
+    MessageStatus,
+    PlatformEventType,
+    RunStatus,
+    TaskOutcome,
+    ToolStatus,
+)
 from code_forge.state_machine import ALLOWED_TRANSITIONS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,15 +51,33 @@ integer = {"type": "integer", "minimum": 0}
 
 schemas = {
     "RunStatus": string(enum=[s.value for s in RunStatus]),
+    "MessageStatus": string(enum=[s.value for s in MessageStatus]),
     "TaskOutcome": string(enum=[s.value for s in TaskOutcome]),
     "ToolStatus": string(enum=[s.value for s in ToolStatus]),
     "EventType": string(enum=[s.value for s in EventType]),
+    "PlatformEventType": string(enum=[s.value for s in PlatformEventType]),
     "ErrorCode": string(enum=[s.value for s in ErrorCode]),
+    "BusinessCode": string(enum=[s.value for s in BusinessCode]),
+    "UserBinding": obj(
+        {
+            "scope_id": string(minLength=1, maxLength=200),
+            "tenant_ref": string(minLength=1, maxLength=200),
+            "user_ref": string(minLength=1, maxLength=200),
+            "user_path": string(minLength=1),
+            "project_ref": string(minLength=1, maxLength=200),
+            "project_path": nullable(string(minLength=1)),
+            "storage_root": string(),
+            "user_rel_path": string(),
+            "project_rel_path": string(),
+        },
+        ["scope_id", "tenant_ref", "user_ref", "user_path", "project_ref"],
+    ),
     "ExecutionContext": obj(
         {
             "scope_id": string(default="default"),
             "actor_ref": nullable(string(maxLength=200)),
             "external_ref": nullable(string(maxLength=200)),
+            "user_binding": nullable(ref("UserBinding")),
         },
         [],
     ),
@@ -59,36 +86,91 @@ schemas = {
         ["name"],
     ),
     "SkillRef": obj(
-        {"name": string(), "version": string(), "digest": string(), "bundle_ref": string()},
-        ["name", "version", "digest", "bundle_ref"],
+        {
+            "name": string(),
+            "version": string(),
+            "digest": string(),
+            "bundle_ref": string(),
+            "source_kind": string(enum=["LEGACY", "USER_DEFAULT", "EXPLICIT", "DIRECT_PACKAGE"]),
+            "source_path": string(),
+            "user_ref": string(),
+            "project_ref": string(),
+        },
+        [
+            "name",
+            "version",
+            "digest",
+            "bundle_ref",
+            "source_kind",
+            "source_path",
+            "user_ref",
+            "project_ref",
+        ],
     ),
     "SkillInfo": obj(
-        {"name": string(), "version": string(), "digest": string(), "description": string()},
-        ["name", "version", "digest", "description"],
+        {
+            "name": string(),
+            "version": string(),
+            "digest": string(),
+            "description": string(),
+            "source_kind": string(enum=["LEGACY", "USER_DEFAULT", "EXPLICIT", "DIRECT_PACKAGE"]),
+            "source_path": string(),
+        },
+        ["name", "version", "digest", "description", "source_kind", "source_path"],
     ),
     "SessionCreate": obj(
         {
-            "title": string(default="New session", maxLength=200),
-            "external_ref": nullable(string(maxLength=200)),
-            "context": ref("ExecutionContext"),
+            "storage_root": string(minLength=1),
+            "user_rel_path": string(minLength=1),
+            "project_ref": nullable(string(minLength=1, maxLength=200)),
+            "project_rel_path": nullable(string(minLength=1)),
         },
-        [],
+        ["storage_root", "user_rel_path"],
     ),
     "Session": obj(
         {
-            "id": uuid,
+            "session_id": uuid,
             "title": string(),
-            "external_ref": nullable(string()),
-            "workspace_id": uuid,
-            "date_created": date,
+            "user_rel_path": string(),
+            "project_ref": nullable(string()),
+            "project_rel_path": string(),
+            "date_created": {**date, "readOnly": True},
+            "date_updated": {**date, "readOnly": True},
         },
-        ["id", "title", "external_ref", "workspace_id", "date_created"],
+        [
+            "session_id",
+            "title",
+            "user_rel_path",
+            "project_ref",
+            "project_rel_path",
+            "date_created",
+            "date_updated",
+        ],
+    ),
+    "SendMessageCreate": obj(
+        {
+            "session_id": uuid,
+            "input": string(minLength=1, maxLength=100000),
+            "agent_ref": string(default="general@1"),
+            "skill_paths": nullable(
+                {**array(string(minLength=1)), "maxItems": 30, "default": None}
+            ),
+            "storage_root": nullable(string(minLength=1)),
+        },
+        ["session_id", "input"],
+    ),
+    "UpdateSession": obj(
+        {"session_id": uuid, "title": string(minLength=1, maxLength=200)},
+        ["session_id", "title"],
     ),
     "RunCreate": obj(
         {
             "input": string(minLength=1, maxLength=100000),
             "agent_ref": string(default="general@1"),
             "skills": {**array(ref("SkillBinding")), "maxItems": 30, "default": []},
+            "skill_paths": nullable(
+                {**array(string(minLength=1)), "maxItems": 30, "default": None}
+            ),
             "context": ref("ExecutionContext"),
         },
         ["input"],
@@ -111,6 +193,10 @@ schemas = {
             "execution_profile_ref": string(),
             "skills": array(ref("SkillRef")),
             "tool_refs": array(string()),
+            "user_binding": nullable(ref("UserBinding")),
+            "effective_skill_paths": array(string()),
+            "skill_path_source": string(enum=["LEGACY", "USER_DEFAULT", "EXPLICIT"]),
+            "path_digest": string(),
         },
         [
             "agent_digest",
@@ -119,6 +205,10 @@ schemas = {
             "execution_profile_ref",
             "skills",
             "tool_refs",
+            "user_binding",
+            "effective_skill_paths",
+            "skill_path_source",
+            "path_digest",
         ],
     ),
     "Run": obj(
@@ -157,49 +247,95 @@ schemas = {
     ),
     "Error": obj(
         {
-            "code": ref("ErrorCode"),
+            "code": string(),
             "message": string(),
             "retryable": {"type": "boolean"},
             "request_id": string(),
         },
         ["code", "message", "retryable", "request_id"],
     ),
-    "ErrorResponse": obj({"error": ref("Error")}, ["error"]),
+    "ErrorResponse": obj(
+        {
+            "code": ref("BusinessCode"),
+            "message": string(),
+            "data": obj({}, []),
+        },
+        ["code", "message", "data"],
+    ),
+    "Message": obj(
+        {
+            "message_id": uuid,
+            "session_id": uuid,
+            "message_seq": {"type": "integer", "minimum": 1},
+            "input": string(),
+            "status": ref("MessageStatus"),
+            "task_outcome": nullable(ref("TaskOutcome")),
+            "output": nullable(string()),
+            "error": nullable(ref("Error")),
+            "date_created": {**date, "readOnly": True},
+            "date_updated": {**date, "readOnly": True},
+        },
+        [
+            "message_id",
+            "session_id",
+            "message_seq",
+            "input",
+            "status",
+            "task_outcome",
+            "output",
+            "error",
+            "date_created",
+            "date_updated",
+        ],
+    ),
     "Event": obj(
         {
             "event_id": uuid,
-            "run_id": uuid,
+            "session_id": uuid,
+            "message_id": uuid,
             "seq": {"type": "integer", "minimum": 1},
-            "schema_version": string(enum=["1"]),
-            "type": ref("EventType"),
+            "type": ref("PlatformEventType"),
             "occurred_at": date,
             "data": {"type": "object", "additionalProperties": True},
         },
-        ["event_id", "run_id", "seq", "schema_version", "type", "occurred_at", "data"],
+        ["event_id", "session_id", "message_id", "seq", "type", "occurred_at", "data"],
     ),
-    "PendingResponse": obj(
-        {
-            "id": uuid,
-            "kind": string(enum=["clarification", "execution_reconciliation", "approval"]),
-            "prompt": string(),
-            "resolved": {"type": "boolean"},
-        },
-        ["id", "kind", "prompt", "resolved"],
-    ),
-    "ResponseCreate": obj(
+    "PendingReply": obj(
         {
             "pending_id": uuid,
-            "response_key": string(minLength=1, maxLength=200),
-            "expected_state_version": integer,
+            "message_id": uuid,
+            "kind": string(enum=["clarification", "execution_reconciliation", "approval"]),
+            "prompt": string(),
+        },
+        ["pending_id", "message_id", "kind", "prompt"],
+    ),
+    "ReplyCreate": obj(
+        {
+            "message_id": uuid,
+            "pending_id": uuid,
             "text": string(minLength=1, maxLength=100000),
         },
-        ["pending_id", "response_key", "expected_state_version", "text"],
+        ["message_id", "pending_id", "text"],
+    ),
+    "SessionState": obj(
+        {
+            "session": ref("Session"),
+            "current_message": nullable(
+                obj(
+                    {"message_id": uuid, "status": ref("MessageStatus")},
+                    ["message_id", "status"],
+                )
+            ),
+            "pending_reply": nullable(ref("PendingReply")),
+            "event_cursor": string(),
+        },
+        ["session", "current_message", "pending_reply", "event_cursor"],
     ),
     "RunSnapshotView": obj(
         {
             "run": ref("Run"),
             "event_cursor": string(),
-            "pending_responses": array(ref("PendingResponse")),
+            "pending_responses": array(ref("PendingReply")),
         },
         ["run", "event_cursor", "pending_responses"],
     ),
@@ -223,8 +359,16 @@ schemas = {
             "model_configured": {"type": "boolean"},
             "execution_backend": string(enum=["local_process"]),
             "permission_mode": string(enum=["default_allow"]),
+            "isolation_mode": string(enum=["trusted_logical"]),
         },
-        ["status", "api_version", "model_configured", "execution_backend", "permission_mode"],
+        [
+            "status",
+            "api_version",
+            "model_configured",
+            "execution_backend",
+            "permission_mode",
+            "isolation_mode",
+        ],
     ),
 }
 # Audit fields on resource views are server-generated and never accepted from clients.
@@ -235,7 +379,7 @@ audit_fields = {
     "updated_by": string(maxLength=200, readOnly=True),
 }
 schemas["AuditFields"] = obj(audit_fields, list(audit_fields))
-for resource in ("Session", "Run"):
+for resource in ("Run",):
     schemas[resource]["properties"].update(audit_fields)
     schemas[resource]["required"] = list(
         dict.fromkeys([*schemas[resource]["required"], *audit_fields])
@@ -243,33 +387,45 @@ for resource in ("Session", "Run"):
 
 # Each event has a closed payload schema; Platform must not infer fields from names.
 event_payloads = {
-    "run.accepted": obj(
-        {"status": string(enum=["QUEUED"]), "snapshot": ref("RunSnapshot")}, ["status", "snapshot"]
-    ),
-    "run.started": obj({"attempt_id": uuid}, ["attempt_id"]),
-    "run.waiting": obj(
+    "message.accepted": obj(
         {
-            "status": string(enum=["WAITING_USER", "WAITING_EXTERNAL"]),
-            "reason": string(),
-            "pending_response": nullable(ref("PendingResponse")),
-            "operation_id": nullable(uuid),
+            "message_id": uuid,
+            "status": string(enum=["QUEUED"]),
         },
-        ["status", "reason", "pending_response", "operation_id"],
+        ["message_id", "status"],
     ),
-    "run.resumed": obj({"status": string(enum=["QUEUED"])}, ["status"]),
-    "run.recovering": obj({"reason": string()}, ["reason"]),
-    "run.cancel_requested": obj({"status": string(enum=["CANCELLING"])}, ["status"]),
-    "run.finished": obj(
+    "message.started": obj(
+        {"message_id": uuid, "status": string(enum=["RUNNING"])},
+        ["message_id", "status"],
+    ),
+    "message.waiting": obj(
         {
-            "status": string(enum=["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]),
+            "message_id": uuid,
+            "status": string(enum=["WAITING_USER", "WAITING_EXTERNAL"]),
+            "pending_reply": nullable(ref("PendingReply")),
+        },
+        ["message_id", "status", "pending_reply"],
+    ),
+    "message.resumed": obj(
+        {"message_id": uuid, "status": string(enum=["QUEUED"])},
+        ["message_id", "status"],
+    ),
+    "message.recovering": obj(
+        {"message_id": uuid, "reason": string()},
+        ["message_id", "reason"],
+    ),
+    "message.finished": obj(
+        {
+            "message_id": uuid,
+            "status": ref("MessageStatus"),
             "task_outcome": nullable(ref("TaskOutcome")),
             "output": nullable(string()),
             "error": nullable(ref("Error")),
         },
-        ["status", "task_outcome", "output", "error"],
+        ["message_id", "status", "task_outcome", "output", "error"],
     ),
-    "message.delta": obj({"message_id": uuid, "text": string()}, ["message_id", "text"]),
-    "message.completed": obj({"message_id": uuid, "text": string()}, ["message_id", "text"]),
+    "message.delta": obj({"text": string()}, ["text"]),
+    "message.completed": obj({"text": string()}, ["text"]),
     "tool.prepared": obj(
         {"operation_id": uuid, "tool_ref": string(), "input_summary": string()},
         ["operation_id", "tool_ref", "input_summary"],
@@ -328,19 +484,56 @@ schemas["Event"] = {
     },
 }
 
-for name, item in [
-    ("SessionPage", "Session"),
-    ("RunPage", "Run"),
-    ("SkillPage", "SkillInfo"),
-    ("FilePage", "FileInfo"),
-    ("EventPage", "Event"),
-]:
-    schemas[name] = obj(
-        {"items": array(ref(item)), "next_cursor": nullable(string())}, ["items", "next_cursor"]
-    )
+schemas["SessionPage"] = obj(
+    {"items": array(ref("Session")), "next_cursor": nullable(string())},
+    ["items", "next_cursor"],
+)
+schemas["MessagePage"] = obj(
+    {"items": array(ref("Message")), "next_cursor": nullable(string())},
+    ["items", "next_cursor"],
+)
+schemas["RunPage"] = obj(
+    {"items": array(ref("Run")), "next_cursor": nullable(string())},
+    ["items", "next_cursor"],
+)
+schemas["SkillPage"] = obj(
+    {"items": array(ref("SkillInfo")), "next_cursor": nullable(string())},
+    ["items", "next_cursor"],
+)
+schemas["FilePage"] = obj(
+    {"items": array(ref("FileInfo")), "next_cursor": nullable(string())},
+    ["items", "next_cursor"],
+)
 schemas["EventPage"] = obj(
     {"items": array(ref("Event")), "next_after_seq": nullable(integer)}, ["items", "next_after_seq"]
 )
+
+
+def envelope(data):
+    return obj(
+        {
+            "code": string(enum=["0000"]),
+            "message": string(enum=["success"]),
+            "data": data,
+        },
+        ["code", "message", "data"],
+    )
+
+
+for name, data in [
+    ("HealthEnvelope", ref("Health")),
+    ("SessionEnvelope", ref("Session")),
+    ("SessionPageEnvelope", ref("SessionPage")),
+    ("MessageEnvelope", ref("Message")),
+    ("MessagePageEnvelope", ref("MessagePage")),
+    ("SessionStateEnvelope", ref("SessionState")),
+    ("EventEnvelope", ref("Event")),
+    ("EventPageEnvelope", ref("EventPage")),
+    ("FilePageEnvelope", ref("FilePage")),
+    ("FileContentEnvelope", ref("FileContent")),
+]:
+    schemas[name] = envelope(data)
+
 paths = {}
 errors = {
     str(n): {
@@ -349,49 +542,47 @@ errors = {
     }
     for n, label in [
         (400, "Invalid request"),
-        (403, "Capability denied"),
         (404, "Not found"),
         (409, "Conflict"),
         (422, "Validation error"),
-        (429, "Resource limit"),
         (503, "Dependency unavailable"),
     ]
 }
 
 
-def add(path, method, op, response, body=None, status=200, query=(), idempotent=False):
-    import re
-
+def add(
+    path,
+    method,
+    op,
+    response,
+    body=None,
+    status=200,
+    query=(),
+    required_query=(),
+    sse=False,
+):
     params = [
-        {"name": name, "in": "path", "required": True, "schema": uuid}
-        for name in re.findall(r"{([^}]+)}", path)
+        {
+            "name": name,
+            "in": "query",
+            "required": name in required_query,
+            "schema": schema,
+        }
+        for name, schema in query
     ]
-    params += [{"name": name, "in": "query", "schema": schema} for name, schema in query]
-    if path.startswith("/v1/"):
-        params.append(
-            {
-                "name": "X-Forge-Scope",
-                "in": "header",
-                "schema": string(default="default"),
-                "description": "Trusted integration scope. This validation stage defaults to default; not an authentication credential.",
-            }
-        )
-    if idempotent:
-        params += [
-            {
-                "name": "Idempotency-Key",
-                "in": "header",
-                "required": True,
-                "schema": string(minLength=1, maxLength=200),
-            }
-        ]
     entry = {
         "operationId": op,
         "parameters": params,
         "responses": {
             str(status): {
                 "description": "Success",
-                "content": {"application/json": {"schema": ref(response)}},
+                "content": {
+                    "text/event-stream" if sse else "application/json": {
+                        "schema": ref(response)
+                        if not sse
+                        else {"type": "string", "description": "Wrapped SSE Event JSON."}
+                    }
+                },
             },
             **errors,
         },
@@ -408,61 +599,121 @@ paging = (
     ("cursor", string()),
     ("limit", {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}),
 )
-add("/health", "get", "health", "Health")
-add("/v1/sessions", "post", "createSession", "Session", "SessionCreate", 201, idempotent=True)
-add("/v1/sessions", "get", "listSessions", "SessionPage", query=paging)
-add("/v1/sessions/{session_id}", "get", "getSession", "Session")
-add(
-    "/v1/sessions/{session_id}/runs",
-    "post",
-    "createRun",
-    "AcceptedRun",
-    "RunCreate",
-    202,
-    idempotent=True,
+event_paging = (
+    ("after_seq", integer),
+    ("limit", {"type": "integer", "minimum": 0, "maximum": 1000, "default": 200}),
 )
-add("/v1/sessions/{session_id}/runs", "get", "listRuns", "RunPage", query=paging)
-add("/v1/runs/{run_id}", "get", "getRun", "Run")
-add("/v1/runs/{run_id}/cancel", "post", "cancelRun", "Run", status=202)
-add("/v1/runs/{run_id}/responses", "post", "respondToRun", "Run", "ResponseCreate", 202)
-add("/v1/runs/{run_id}/snapshot", "get", "getRunSnapshot", "RunSnapshotView")
+add("/health", "get", "health", "HealthEnvelope")
+add("/v1/create-session", "post", "createSession", "SessionEnvelope", "SessionCreate", 201)
 add(
-    "/v1/runs/{run_id}/event-history",
+    "/v1/update-session",
+    "post",
+    "updateSession",
+    "SessionEnvelope",
+    "UpdateSession",
+)
+add(
+    "/v1/get-session",
     "get",
-    "listRunEvents",
-    "EventPage",
+    "getSession",
+    "SessionEnvelope",
+    query=(("session_id", uuid),),
+    required_query=("session_id",),
+)
+add(
+    "/v1/list-sessions",
+    "get",
+    "listSessions",
+    "SessionPageEnvelope",
     query=(
-        ("after_seq", integer),
-        ("limit", {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200}),
+        ("user_rel_path", string()),
+        ("project_ref", string()),
+        *paging,
     ),
 )
-add("/v1/runs/{run_id}/events", "get", "streamRunEvents", "Event", query=(("after_seq", integer),))
-stream = paths["/v1/runs/{run_id}/events"]["get"]
-stream["parameters"].append({"name": "Last-Event-ID", "in": "header", "schema": string()})
-stream["responses"]["200"] = {
-    "description": "SSE id is run_id:seq; data is Event JSON. Replay then live events. Disconnect does not cancel Run.",
-    "content": {"text/event-stream": {"schema": {"type": "string"}}},
-}
-add("/v1/skills", "get", "listSkills", "SkillPage", query=paging)
-add("/v1/sessions/{session_id}/files", "get", "listWorkspaceFiles", "FilePage", query=paging)
 add(
-    "/v1/sessions/{session_id}/files/content",
-    "get",
-    "readWorkspaceFile",
-    "FileContent",
-    query=(("path", string(minLength=1, maxLength=1000)),),
+    "/v1/send-message",
+    "post",
+    "sendMessage",
+    "EventEnvelope",
+    "SendMessageCreate",
+    sse=True,
 )
-next(
-    p
-    for p in paths["/v1/sessions/{session_id}/files/content"]["get"]["parameters"]
-    if p["name"] == "path"
-)["required"] = True
+add(
+    "/v1/get-session-state",
+    "get",
+    "getSessionState",
+    "SessionStateEnvelope",
+    query=(("session_id", uuid),),
+    required_query=("session_id",),
+)
+add(
+    "/v1/get-message",
+    "get",
+    "getMessage",
+    "MessageEnvelope",
+    query=(("message_id", uuid),),
+    required_query=("message_id",),
+)
+add(
+    "/v1/list-session-messages",
+    "get",
+    "listSessionMessages",
+    "MessagePageEnvelope",
+    query=(("session_id", uuid), *paging),
+    required_query=("session_id",),
+)
+add(
+    "/v1/reply",
+    "post",
+    "reply",
+    "EventEnvelope",
+    "ReplyCreate",
+    sse=True,
+)
+add(
+    "/v1/stream-session-events",
+    "get",
+    "streamSessionEvents",
+    "EventEnvelope",
+    query=(("session_id", uuid), ("after_seq", integer)),
+    required_query=("session_id",),
+    sse=True,
+)
+add(
+    "/v1/list-session-events",
+    "get",
+    "listSessionEvents",
+    "EventPageEnvelope",
+    query=(("session_id", uuid), *event_paging),
+    required_query=("session_id",),
+)
+add(
+    "/v1/list-session-files",
+    "get",
+    "listSessionFiles",
+    "FilePageEnvelope",
+    query=(("session_id", uuid), ("storage_root", string())),
+    required_query=("session_id",),
+)
+add(
+    "/v1/read-session-file",
+    "get",
+    "readSessionFile",
+    "FileContentEnvelope",
+    query=(
+        ("session_id", uuid),
+        ("storage_root", string()),
+        ("path", string(minLength=1, maxLength=1000)),
+    ),
+    required_query=("session_id", "path"),
+)
 
 spec = {
     "openapi": "3.1.0",
     "info": {
         "title": "Code Forge Runtime Integration Contract",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "description": "Architecture contract; endpoints are not implemented yet. Trusted local verification uses default permissions and local subprocess execution.",
     },
     "servers": [{"url": "http://127.0.0.1:8000"}],

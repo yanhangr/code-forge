@@ -2,8 +2,7 @@
 
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Protocol
-from typing import Any
+from typing import Any, Protocol
 
 from .contracts import (
     AcceptedRun,
@@ -16,6 +15,8 @@ from .contracts import (
     RunStatus,
     TaskOutcome,
     ToolStatus,
+    UserBinding,
+    WorkspaceCommit,
 )
 
 
@@ -40,6 +41,12 @@ class SnapshotResolver(Protocol):
         """
         ...
 
+    def list_skills(
+        self,
+        user_binding: UserBinding | None = None,
+        skill_paths: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]: ...
+
 
 class RunRepository(Protocol):
     async def find_request(
@@ -47,7 +54,12 @@ class RunRepository(Protocol):
     ) -> ExistingRequest | None: ...
     async def require_session(self, scope_id: str, session_id: str) -> None: ...
     async def accept_once(
-        self, request: RunRequest, key: str, fingerprint: str, snapshot: RunSnapshot
+        self,
+        request: RunRequest,
+        key: str,
+        fingerprint: str,
+        snapshot: RunSnapshot,
+        reject_if_active: bool = False,
     ) -> AcceptedRun:
         """One transaction: unique request key, Session seq, input, snapshot, Run, event.
 
@@ -78,12 +90,17 @@ class RuntimeStorePort(Protocol):
 
     def require_session(self, scope_id: str, session_id: str) -> None: ...
 
-    def find_request(
-        self, scope_id: str, session_id: str, key: str
-    ) -> ExistingRequest | None: ...
+    def get_workspace(self, scope_id: str, workspace_id: str) -> dict[str, Any] | None: ...
+
+    def find_request(self, scope_id: str, session_id: str, key: str) -> ExistingRequest | None: ...
 
     def accept_once(
-        self, request: RunRequest, key: str, fingerprint: str, snapshot: RunSnapshot
+        self,
+        request: RunRequest,
+        key: str,
+        fingerprint: str,
+        snapshot: RunSnapshot,
+        reject_if_active: bool = False,
     ) -> AcceptedRun: ...
 
     def get_run(self, scope_id: str, run_id: str) -> dict[str, Any] | None: ...
@@ -94,11 +111,21 @@ class RuntimeStorePort(Protocol):
 
     def claim_next_run(
         self,
-        scope_id: str,
+        scope_id: str | None,
         worker_id: str,
         lease_seconds: int,
         now: datetime | None = None,
     ) -> dict[str, Any] | None: ...
+
+    def record_workspace_revision(
+        self,
+        scope_id: str,
+        workspace_id: str,
+        attempt_id: str,
+        workspace_epoch: int,
+        commit: WorkspaceCommit,
+        actor: str,
+    ) -> None: ...
 
     def transition_run(
         self,
@@ -147,6 +174,8 @@ class RuntimeStorePort(Protocol):
         execution_profile_ref: str,
         input_summary: str,
         actor: str,
+        workspace_id: str | None = None,
+        input_revision_id: str | None = None,
     ) -> tuple[str, ToolStatus]: ...
 
     def start_tool(self, scope_id: str, operation_id: str, actor: str) -> None: ...
@@ -169,6 +198,7 @@ class RuntimeStorePort(Protocol):
         result_ref: str | None,
         error: dict[str, Any] | None,
         actor: str,
+        result_revision_id: str | None = None,
     ) -> None: ...
 
     def respond_to_run(
@@ -199,25 +229,52 @@ class ExecutionBackend(Protocol):
 
 
 class WorkspacePort(Protocol):
-    def ensure_workspace(self, workspace_id: str) -> Any: ...
+    def ensure_workspace(
+        self, workspace_id: str, user_binding: UserBinding | None = None
+    ) -> Any: ...
 
-    def attempt_dir(self, workspace_id: str, attempt_id: str) -> Any: ...
+    def attempt_dir(
+        self,
+        workspace_id: str,
+        attempt_id: str,
+        user_binding: UserBinding | None = None,
+    ) -> Any: ...
 
-    def prepare_attempt(self, workspace_id: str, attempt_id: str) -> Any: ...
+    def prepare_attempt(
+        self,
+        workspace_id: str,
+        attempt_id: str,
+        user_binding: UserBinding | None = None,
+    ) -> Any: ...
 
     def commit_attempt(
-        self, workspace_id: str, attempt_id: str, revision_id: str
-    ) -> tuple[str, list[str]]: ...
+        self,
+        workspace_id: str,
+        attempt_id: str,
+        revision_id: str,
+        user_binding: UserBinding | None = None,
+    ) -> WorkspaceCommit: ...
 
     def write_text(
-        self, workspace_id: str, attempt_id: str, relative_path: str, content: str
+        self,
+        workspace_id: str,
+        attempt_id: str,
+        relative_path: str,
+        content: str,
+        user_binding: UserBinding | None = None,
     ) -> Any: ...
 
     def read_text(
-        self, workspace_id: str, relative_path: str, limit: int = 1024 * 1024
+        self,
+        workspace_id: str,
+        relative_path: str,
+        limit: int = 1024 * 1024,
+        user_binding: UserBinding | None = None,
     ) -> tuple[str, str, bool]: ...
 
-    def list_files(self, workspace_id: str) -> list[dict[str, object]]: ...
+    def list_files(
+        self, workspace_id: str, user_binding: UserBinding | None = None
+    ) -> list[dict[str, object]]: ...
 
 
 class ContextManagerPort(Protocol):

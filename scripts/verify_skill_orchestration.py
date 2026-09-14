@@ -30,8 +30,7 @@ def main() -> None:
         )
         for skill in snapshot.skills:
             print(
-                f"{skill.name}@{skill.version} "
-                f"digest={skill.digest[:12]} bundle={skill.bundle_ref}"
+                f"{skill.name}@{skill.version} digest={skill.digest[:12]} bundle={skill.bundle_ref}"
             )
 
     asyncio.run(run())

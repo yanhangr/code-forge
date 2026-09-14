@@ -10,15 +10,19 @@ from pathlib import Path
 from code_forge.contracts import (
     AcceptedRun,
     AuditFields,
+    BusinessCode,
     ErrorCode,
     EventType,
     ExecutionContext,
+    MessageStatus,
+    PlatformEventType,
     RunSnapshot,
     RunStatus,
     SkillBinding,
     SkillRef,
     TaskOutcome,
     ToolStatus,
+    UserBinding,
 )
 from code_forge.state_machine import ALLOWED_TRANSITIONS
 
@@ -47,7 +51,16 @@ class ContractConsistencyTests(unittest.TestCase):
         )
 
     def test_enums_match_python_openapi_and_sql(self):
-        for cls in (RunStatus, TaskOutcome, ToolStatus, EventType, ErrorCode):
+        for cls in (
+            RunStatus,
+            MessageStatus,
+            TaskOutcome,
+            ToolStatus,
+            EventType,
+            PlatformEventType,
+            ErrorCode,
+            BusinessCode,
+        ):
             self.assertEqual(set(self.schemas[cls.__name__]["enum"]), {s.value for s in cls})
         for sql_name, cls in [
             ("run_status", RunStatus),
@@ -68,6 +81,7 @@ class ContractConsistencyTests(unittest.TestCase):
             RunSnapshot,
             SkillBinding,
             SkillRef,
+            UserBinding,
         ):
             self.assertEqual(
                 set(self.schemas[cls.__name__]["properties"]),
@@ -93,7 +107,7 @@ class ContractConsistencyTests(unittest.TestCase):
 
     def test_each_event_has_a_closed_payload(self):
         mapping = self.schemas["Event"]["discriminator"]["mapping"]
-        self.assertEqual(set(mapping), {e.value for e in EventType})
+        self.assertEqual(set(mapping), {e.value for e in PlatformEventType})
         for event_name, path in mapping.items():
             event = self.schemas[path.rsplit("/", 1)[1]]
             self.assertFalse(event["additionalProperties"])
@@ -110,14 +124,31 @@ class ContractConsistencyTests(unittest.TestCase):
             for op in methods.values():
                 operations.append(op["operationId"])
         self.assertEqual(len(operations), len(set(operations)))
-        for path in ("/v1/sessions", "/v1/sessions/{session_id}/runs"):
-            keys = [
-                p
-                for p in self.spec["paths"][path]["post"]["parameters"]
-                if p["name"] == "Idempotency-Key"
-            ]
-            self.assertEqual(len(keys), 1)
-            self.assertTrue(keys[0]["required"])
+        self.assertEqual(
+            set(self.spec["paths"]),
+            {
+                "/health",
+                "/v1/create-session",
+                "/v1/update-session",
+                "/v1/get-session",
+                "/v1/list-sessions",
+                "/v1/send-message",
+                "/v1/get-session-state",
+                "/v1/get-message",
+                "/v1/list-session-messages",
+                "/v1/reply",
+                "/v1/stream-session-events",
+                "/v1/list-session-events",
+                "/v1/list-session-files",
+                "/v1/read-session-file",
+            },
+        )
+        for methods in self.spec["paths"].values():
+            for operation in methods.values():
+                self.assertNotIn(
+                    "Idempotency-Key",
+                    {item["name"] for item in operation.get("parameters", [])},
+                )
 
     def test_database_request_and_ownership_constraints_exist(self):
         for expected in (

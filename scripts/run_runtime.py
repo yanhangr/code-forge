@@ -33,7 +33,7 @@ def main() -> None:
     print(f"Harness file: {inspect.getsourcefile(type(server.runtime.harness))}")
     model_adapter = getattr(server.runtime.harness, "model_adapter", None)
     print(f"Streaming model: {bool(model_adapter and hasattr(model_adapter, 'complete_stream'))}")
-    print("Health endpoint: http://127.0.0.1:8000/health")
+    print(f"Health endpoint: http://{args.host}:{args.port}/health")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from code_forge.contracts import ExecutionContext, RunRequest, RunStatus, TaskOutcome
 from code_forge.harness.context import ConversationContextManager
-from code_forge.persistence.sqlite_store import SqliteRuntimeStore, SqliteRunRepository
+from code_forge.persistence.sqlite_store import SqliteRunRepository, SqliteRuntimeStore
 from code_forge.ports import DefaultAllowAuthorization
 from code_forge.service import RunService
 from code_forge.skills.manual_skill_resolver import ManualSkillResolver

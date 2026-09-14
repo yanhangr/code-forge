@@ -10,7 +10,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from code_forge.contracts import DomainError, ErrorCode, OperationResult, OperationSpec, ToolStatus
+from code_forge.contracts import (
+    DomainError,
+    ErrorCode,
+    MountGranularity,
+    OperationResult,
+    OperationSpec,
+    ToolStatus,
+    WorkspaceCommit,
+)
 from code_forge.ports import ExecutionBackend
 from code_forge.workspace.store import WorkspaceStore
 
@@ -34,6 +42,7 @@ class _RunningOperation:
     stdout_ref: str | None = None
     stderr_ref: str | None = None
     workspace_revision: str | None = None
+    workspace_commit: WorkspaceCommit | None = None
     error_code: ErrorCode | None = None
     error_message: str | None = None
     stdout_truncated: bool = False
@@ -65,9 +74,20 @@ class LocalProcessBackend(ExecutionBackend):
                         "Operation id is already bound to different argv",
                     )
                 return spec.operation_id
-            cwd = self.workspace_store.attempt_dir(spec.workspace_ref, spec.attempt_id)
+            cwd = self.workspace_store.attempt_dir(
+                spec.workspace_ref,
+                spec.attempt_id,
+                spec.user_binding,
+            )
             if not cwd.exists():
-                self.workspace_store.prepare_attempt(spec.workspace_ref, spec.attempt_id)
+                self.workspace_store.prepare_attempt(
+                    spec.workspace_ref,
+                    spec.attempt_id,
+                    spec.user_binding,
+                )
+            if spec.working_directory is not None:
+                cwd = Path(spec.working_directory).resolve(strict=False)
+                self._validate_working_directory(spec, cwd)
             op_dir = self.root / spec.operation_id
             op_dir.mkdir(parents=True, exist_ok=True)
             stdout_path = op_dir / "stdout.log"
@@ -149,7 +169,9 @@ class LocalProcessBackend(ExecutionBackend):
                 operation.status = ToolStatus.CANCELLED
             else:
                 operation.exit_code = await wait_task
-                operation.status = ToolStatus.SUCCEEDED if operation.exit_code == 0 else ToolStatus.FAILED
+                operation.status = (
+                    ToolStatus.SUCCEEDED if operation.exit_code == 0 else ToolStatus.FAILED
+                )
                 if operation.exit_code != 0:
                     operation.error_code = ErrorCode.EXECUTION_FAILED
                     operation.error_message = f"Process exited with {operation.exit_code}"
@@ -164,12 +186,14 @@ class LocalProcessBackend(ExecutionBackend):
         if operation.status == ToolStatus.SUCCEEDED:
             try:
                 revision_id = str(uuid.uuid4())
-                _, _ = self.workspace_store.commit_attempt(
+                commit = self.workspace_store.commit_attempt(
                     operation.spec.workspace_ref,
                     operation.spec.attempt_id,
                     revision_id,
+                    operation.spec.user_binding,
                 )
-                operation.workspace_revision = revision_id
+                operation.workspace_commit = commit
+                operation.workspace_revision = commit.revision_id
             except Exception as exc:
                 operation.status = ToolStatus.FAILED
                 operation.error_code = ErrorCode.EXECUTION_FAILED
@@ -220,6 +244,7 @@ class LocalProcessBackend(ExecutionBackend):
 
     @staticmethod
     def _result(operation: _RunningOperation) -> OperationResult:
+        commit = operation.workspace_commit
         return OperationResult(
             operation_id=operation.spec.operation_id,
             status=operation.status,
@@ -228,7 +253,43 @@ class LocalProcessBackend(ExecutionBackend):
             stderr_ref=operation.stderr_ref,
             workspace_revision=operation.workspace_revision,
             error_code=operation.error_code,
+            manifest_digest=commit.manifest_digest if commit else None,
+            manifest_ref=commit.manifest_ref if commit else None,
+            storage_ref=commit.storage_ref if commit else None,
+            changed_paths=commit.changed_paths if commit else (),
         )
+
+    @staticmethod
+    def _validate_working_directory(spec: OperationSpec, cwd: Path) -> None:
+        binding = spec.user_binding
+        if binding is None:
+            if spec.mount_spec is not None:
+                raise DomainError(
+                    ErrorCode.INVALID_REQUEST,
+                    "MountSpec requires a UserBinding",
+                )
+            return
+        try:
+            cwd.relative_to(Path(binding.project_path))
+        except ValueError as exc:
+            raise DomainError(
+                ErrorCode.INVALID_REQUEST,
+                "working_directory must be below project_path",
+            ) from exc
+        if spec.mount_spec is None:
+            return
+        if spec.mount_spec.granularity == MountGranularity.PROJECT:
+            expected = binding.project_ref
+        else:
+            expected = spec.mount_spec.source_ref
+        if (
+            spec.mount_spec.source_ref != expected
+            and spec.mount_spec.granularity != MountGranularity.REVISION
+        ):
+            raise DomainError(
+                ErrorCode.INVALID_REQUEST,
+                "MountSpec source does not match the execution scope",
+            )
 
 
 async def _kill_after_timeout(process: asyncio.subprocess.Process) -> None:
