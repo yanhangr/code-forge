@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -25,6 +26,8 @@ from code_forge.ports import (
     WorkspacePort,
 )
 from code_forge.service import RunService
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
@@ -92,7 +95,15 @@ class AgentRuntime:
                 continue
             self.workspace.ensure_user_layout(session["workspace_id"], binding)
             self.workspace.ensure_session_storage(session, binding)
-            runs, _ = self.store.list_messages_public(session["id"], None, 10_000)
+            try:
+                runs, _ = self.store.list_messages_public(session["id"], None, 10_000)
+            except DomainError as exc:
+                logger.warning(
+                    "Skipping transcript projection for session %s; content is unavailable: %s",
+                    session["id"],
+                    exc,
+                )
+                continue
             for run in runs:
                 self._append_transcript_user(run, binding)
                 self._append_transcript_result(run, session)

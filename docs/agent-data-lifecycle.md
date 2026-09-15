@@ -309,4 +309,6 @@ Skill 源目录 `skills/` 是编辑源，不是已接受 Run 的运行源。Run 
 | 模型最后说了什么 | `runs.output_ref` 指向的消息文件和 `message.completed` content 记录 | 流中间态只有 delta |
 | 如何继续下一轮 | `runs.input_ref/output_ref` + Workspace current | 不依赖 LangGraph checkpoint |
 
+启动时 `materialize_user_storage` 会为每个绑定 Session 回填 transcript。若某个历史 Session 的 `*_ref` 指向的正文已丢失，只跳过该 Session 的投影并记录 warning，不阻塞 Runtime 启动；该 Session 的直接读取仍按引用缺失返回 `DEPENDENCY_UNAVAILABLE`，不会用空内容冒充。
+
 这份 As-Is 文档描述的是当前代码行为。任何表结构、持久化时刻、恢复语义或事务边界变化，都必须同步更新本文、[database.md](database.md)、[agent-workflow.md](agent-workflow.md) 和相关 TC。

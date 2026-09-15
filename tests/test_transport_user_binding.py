@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from code_forge.contracts import DomainError
 from code_forge.transport.server import create_server
 
 
@@ -438,6 +439,42 @@ class PlatformApiTransportTests(unittest.TestCase):
             sum(item["type"] == "message.cancel_requested" for item in replay["data"]["items"]),
             1,
         )
+
+    def test_startup_survives_session_with_missing_content_object(self):
+        _, created = self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": self.storage_root.as_posix(),
+                "user_rel_path": "T001/users/U001",
+                "project_ref": "P001",
+            },
+            expected_status=201,
+        )
+        assert isinstance(created, dict)
+        session_id = created["data"]["session_id"]
+        self.request(
+            "POST",
+            "/v1/send-message",
+            body={"session_id": session_id, "input": "first"},
+            expected_status=200,
+        )
+        self.server.runtime.stop_worker()
+
+        snapshots = sorted((self.user_path / "sessions" / session_id / "snapshots").glob("*.json"))
+        self.assertTrue(snapshots)
+        for snapshot in snapshots:
+            snapshot.unlink()
+
+        restarted = create_server("127.0.0.1", 0, root=self.runtime_root, env={})
+        self.addCleanup(restarted.runtime.stop_worker)
+        self.addCleanup(restarted.server_close)
+        self.assertIn(
+            session_id,
+            [item["id"] for item in restarted.runtime.store.list_bound_sessions()],
+        )
+        with self.assertRaises(DomainError):
+            restarted.runtime.store.list_messages_public(session_id, None, 10)
 
 
 if __name__ == "__main__":

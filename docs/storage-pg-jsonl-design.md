@@ -220,6 +220,7 @@ read_object(user_binding, ref) -> bytes
 | 配置快照 | run_events 中的 SnapshotRef 或 `runs.config_snapshot_ref` | digest 比对 |
 
 - 引用缺失或 digest 不符：`ContentUnavailable` 在适配器边界映射为 `DomainError(DEPENDENCY_UNAVAILABLE)`（HTTP 5001），不静默用空串冒充。
+- 启动时的 transcript 投影（`materialize_user_storage`）允许某个绑定 Session 的正文不可用：记录 warning 并跳过该 Session 的投影，不阻塞 Runtime 启动，也不伪造内容；直接读取该 Session 仍按上一条返回 `DEPENDENCY_UNAVAILABLE`。
 - GC：扫描 Session content 日志与 PG 引用，回收无引用记录（崩溃孤儿）与无内容引用（悬空）；GC 必须可审计，不删除被 PG 引用的事实。当前尚未实现 GC。
 - 恢复顺序仍为：先读 PG 状态/租约/epoch，再核验内容引用；不因读文件而放宽 fenced 写入规则。
 
