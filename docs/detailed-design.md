@@ -77,7 +77,7 @@ Session 对应一个持久框架 thread_id；每个 Project 对应一个 Workspa
 
 所有业务资源按 scope_id=user_ref 关联，复合外键防止跨用户误绑。`user_path` 是用户隔离基准，`project_path` 必须位于其下并作为 Agent 可写根。Skill 不隶属于 Workspace：缺省使用 `user_path/config/skills`，Platform 可在 Run 请求中传多个显式路径覆盖该缺省值。不能仅凭随机 ID 作为将来的访问授权；当前 default allow 是可信验证模式，路径逻辑隔离不构成文件系统安全边界。
 
-字段映射、统一锁顺序和各事务写入边界见 [数据库实现说明](database.md)。
+字段映射、统一锁顺序和各事务写入边界见 [数据库实现说明](database.md)。正文外置与引用解析见 [PG + JSONL 存储设计](storage-pg-jsonl-design.md)。
 
 SQL 对唯一请求键、Session 顺序及结果状态做约束；唯一主任务/有效Attempt由活动指针、行锁与epoch事务保证。Session.active_run_id 的逻辑归属仍须在事务中管理，等待时不能让后序 Run 越过。DDL 不自动提供整个调度算法。
 

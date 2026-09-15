@@ -1,6 +1,6 @@
 """Implementation boundaries used by the Runtime composition root."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -111,8 +111,6 @@ class RuntimeStorePort(Protocol):
         self, scope_id: str, session_id: str, cursor: str | None, limit: int
     ) -> tuple[list[dict[str, Any]], str | None]: ...
 
-    def get_tool_execution(self, operation_id: str) -> dict[str, Any] | None: ...
-
     def claim_next_run(
         self,
         scope_id: str | None,
@@ -180,6 +178,7 @@ class RuntimeStorePort(Protocol):
         actor: str,
         workspace_id: str | None = None,
         input_revision_id: str | None = None,
+        input_text: str = "",
     ) -> tuple[str, ToolStatus]: ...
 
     def start_tool(self, scope_id: str, operation_id: str, actor: str) -> None: ...
@@ -221,10 +220,62 @@ class RuntimeStorePort(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+class ContentStorePort(Protocol):
+    """Body storage boundary for the PostgreSQL + JSONL split.
+
+    PostgreSQL keeps relational facts and content references; implementations
+    keep the actual bodies (messages, event payloads, snapshots, pending
+    responses) in JSONL logs and immutable object files. Records are written
+    and flushed before the referencing database transaction commits, so a crash
+    between the two leaves a reclaimable orphan rather than a dangling promise.
+    """
+
+    def append_record(
+        self,
+        base: Any,
+        relative_dir: str,
+        record: dict[str, Any],
+        *,
+        prefix: str = "content",
+    ) -> Any:
+        """Append one JSONL record and return its ref/offset/bytes/digest."""
+        ...
+
+    def read_record(self, base: Any, ref: str, offset: int, length: int) -> dict[str, Any]: ...
+
+    def read_verified(
+        self,
+        base: Any,
+        ref: str,
+        offset: int,
+        length: int,
+        expected_digest: str | None,
+    ) -> dict[str, Any]: ...
+
+    def write_object(self, base: Any, relative_path: str, payload: bytes) -> Any:
+        """Write one immutable object file; the same path is idempotent."""
+        ...
+
+    def read_object(self, base: Any, ref: str) -> bytes: ...
+
+
+OutputSink = Callable[[str, str, bool], None]
+
+
 class ExecutionBackend(Protocol):
     async def capabilities(self) -> frozenset[str]: ...
-    async def submit(self, spec: OperationSpec) -> str:
-        """Return stable operation_id; same ID/different parameters must conflict."""
+
+    async def submit(
+        self,
+        spec: OperationSpec,
+        *,
+        on_output: OutputSink | None = None,
+    ) -> str:
+        """Return stable operation_id; same ID/different parameters must conflict.
+
+        ``on_output`` is invoked incrementally with ``(stream, text, truncated)`` so the
+        owning harness can persist progress without the backend depending on the store.
+        """
         ...
 
     async def get_status(self, operation_id: str) -> OperationResult: ...

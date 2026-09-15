@@ -136,7 +136,6 @@ class ContractConsistencyTests(unittest.TestCase):
                 "/v1/cancel-message",
                 "/v1/get-session-state",
                 "/v1/get-message",
-                "/v1/get-tool-execution",
                 "/v1/list-session-messages",
                 "/v1/reply",
                 "/v1/stream-session-events",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -128,6 +129,39 @@ Use execute_python carefully.
         self.assertNotEqual(new_run["id"], run["id"])
         self.assertNotEqual(new_run["config_snapshot"]["skills"][0]["digest"], old_digest)
 
+    async def test_run_bodies_are_files_not_database_columns(self):
+        input_text = "```python\nprint('content-split')\n```"
+        await self._submit(input_text)
+        run = self.store.conn.execute("SELECT * FROM runs").fetchone()
+        columns = set(run.keys())
+        self.assertIn("input_ref", columns)
+        self.assertNotIn("input", columns)
+        self.assertNotIn("output", columns)
+        self.assertNotIn("config_snapshot", columns)
+
+        base = Path(self.temp.name)
+        message_path = base / run["input_ref"]
+        self.assertTrue(message_path.is_file())
+        message = json.loads(message_path.read_text(encoding="utf-8"))
+        self.assertEqual(message["content"], input_text)
+        self.assertEqual(message["role"], "user")
+        snapshot_path = base / run["config_snapshot_ref"]
+        self.assertTrue(snapshot_path.is_file())
+        self.assertTrue(snapshot_path.read_text(encoding="utf-8").startswith("{"))
+
+        event = self.store.conn.execute(
+            "SELECT data_ref,data_offset,data_bytes FROM run_events LIMIT 1"
+        ).fetchone()
+        self.assertNotIn(
+            "data",
+            {row["name"] for row in self.store.conn.execute("PRAGMA table_info(run_events)")},
+        )
+        self.assertTrue((base / event["data_ref"]).is_file())
+        with (base / event["data_ref"]).open("rb") as handle:
+            handle.seek(event["data_offset"])
+            record = json.loads(handle.read(event["data_bytes"]).decode("utf-8"))
+        self.assertEqual(record["data"]["status"], RunStatus.QUEUED.value)
+
     async def test_idempotency_conflict_is_reported(self):
         await self._submit("```python\nprint('a')\n```", key="same")
         with self.assertRaises(DomainError) as error:
@@ -174,6 +208,58 @@ Use execute_python carefully.
         self.assertIn("tool.started", event_types)
         self.assertIn("tool.finished", event_types)
         self.assertIn("run.finished", event_types)
+
+    async def test_model_cannot_execute_under_unfrozen_skill(self):
+        class StubModel:
+            def __init__(self):
+                self.calls = 0
+
+            async def complete(self, messages, tools=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "execute_command",
+                                    "arguments": json.dumps(
+                                        {"command": "echo hi", "skill": "filesystem"}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                return {"role": "assistant", "content": "done", "tool_calls": []}
+
+        harness = LocalDeterministicHarness(
+            self.store,
+            self.execution,
+            self.workspace,
+            worker_id="test-worker",
+            model_adapter=StubModel(),
+            resolver=self.resolver,
+        )
+        await self._submit(
+            "run a general task",
+            key="unfrozen-skill",
+            skills=(SkillBinding(name="python-analysis", version="1"),),
+        )
+        claimed = self.store.claim_next_run(
+            "default",
+            "test-worker",
+            60,
+            datetime.now(timezone.utc),
+        )
+        result = await harness.execute(claimed)
+        self.assertEqual(result["status"], RunStatus.SUCCEEDED.value)
+        executions = self.store.conn.execute(
+            "SELECT COUNT(*) FROM tool_executions WHERE scope_id = ? AND run_id = ?",
+            ("default", result["id"]),
+        ).fetchone()[0]
+        self.assertEqual(executions, 0)
 
     async def test_operation_timeout_writes_diagnostic_to_stderr(self):
         spec = OperationSpec(

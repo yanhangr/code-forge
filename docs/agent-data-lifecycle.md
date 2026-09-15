@@ -1,6 +1,8 @@
 # Agent 流程与数据落点（As-Is）
 
-日期：2026-09-14。范围：当前仓库中实际可运行的本地 Agent Runtime，而不是尚未部署的 PostgreSQL 生产实现。
+日期：2026-09-15（正文外置更新）。范围：当前仓库中实际可运行的本地 Agent Runtime，而不是尚未部署的 PostgreSQL 生产实现。
+
+> 存储分层已按 [PG + JSONL 设计](storage-pg-jsonl-design.md) 落地：PG 只存关系、状态、序号、幂等、引用、摘要与长度；输入/回复/事件 payload/快照正文在 Session 文件与 content JSONL。下表与各流程中的“已提交”均指引用及其信封已入库，正文已在文件落盘。
 
 本文回答三个问题：
 
@@ -12,12 +14,12 @@
 
 ## 1. 结论摘要
 
-当前数据分成四类载体：
+当前数据分成多类载体：
 
 | 载体 | 默认位置 | 当前保存的内容 | 是否可作为恢复事实 |
 | --- | --- | --- | --- |
-| SQLite 运行库 | `FORGE_RUNTIME_DIR/state.db`，默认 `.runtime/state.db` | Session、Message 到 Run 的映射、Attempt、工具账本、Session 级事件、配置快照、幂等键 | 是，当前进程重启后仍可读取 |
-| Session 文件 | `<user_root>/sessions/<session_id>/` | `session.json` 逻辑绑定元数据和 `transcript-*.jsonl` 对话记录 | 是；SQLite 仍是权威状态，文件是用户根目录投影 |
+| SQLite 运行库 | `FORGE_RUNTIME_DIR/state.db`，默认 `.runtime/state.db` | Session、Message 到 Run 的映射、Attempt、工具账本、事件信封与 `*_ref/digest/bytes/chars`、幂等键 | 是，当前进程重启后仍可读取；正文需按引用读取 |
+| Session 文件 | `<user_root>/sessions/<session_id>/`（legacy 为 `.runtime/sessions/`） | `session.json` 元数据、`content-*.jsonl` 事件正文、`messages/<run_id>-*.json` 消息正文、`snapshots/<run_id>.json` 快照、`transcript-*.jsonl` 消息投影 | 是，正文事实；SQLite 是索引/状态事实，`transcript-*` 仅投影 |
 | Tool Output | `<user_root>/tool-output/<session_id>/<run_id>/<operation_id>/` | 操作 stdin 输入、受限 stdout/stderr 日志与操作引用 | 是，绑定模式；legacy 仍使用 `.runtime/operations/` |
 | Skill 快照 | 绑定模式为 `.runtime/skill-snapshots/<scope-digest>/<digest>/`；legacy 为 `.runtime/skill-snapshots/<digest>/` | 接受 Run 时固定下来的完整 Skill 包 | 是，已接受 Run 从快照读取，不读源目录 |
 | Workspace 与操作文件 | 绑定模式使用 UserBinding `project_path` 和 `.forge/`；legacy 使用 `.runtime/workspace-store/`；日志在 `.runtime/operations/` | 当前文件、修订副本、manifest、完整受限日志 | 是，文件先保存；修订随后与数据库 CAS 关联 |
@@ -27,12 +29,13 @@
 
 - `POST /v1/create-session` 返回前，Workspace、Session、路径绑定和内部创建记录已经写入 SQLite；绑定模式下同时建立 `sessions/<session_id>/`、`config/`、`tool-output/`、`snapshots/` 用户目录。
 - 每个 Skill 包在 Run 接受事务之前就已经复制到不可变快照目录；接受事务只保存引用、版本和 digest。
-- `POST /v1/send-message` 返回首个 SSE 事件前，Message 对应的 Run 输入、配置快照、`QUEUED` 状态和首事件已经提交。
+- `POST /v1/send-message` 返回首个 SSE 事件前，输入正文与 config 快照先写入文件，随后含 `input_ref`/`config_snapshot_ref` 的 Run、`QUEUED` 状态和首事件在同一事务提交。
 - Worker 领取 Message 时，Attempt、epoch、租约、`RUNNING` 状态和开始事件已经提交。
 - 工具是在 `tool.prepared` 和 `tool.started` 落库之后才真正启动。
-- 工具日志先持续写入文件；工具结束后，最多各 8192 字节的 stdout/stderr 才作为 `tool.output` 事件落库。
+- 工具输入代码在 `tool.prepared` 事件中随意图一起落库。
+- 工具日志持续写入文件；适配器同时按分片回调 Harness，Harness 立即写 `tool.output` 事件，实现边执行边推送。
 - 工作区文件内容先提交到文件系统，再写 `workspace_revisions` 并通过 Workspace lease/epoch 和父修订 CAS 更新 `workspaces.current_revision`，最后写 `workspace.committed`。
-- 最终文本、`task_outcome` 和终态在同一个 SQLite 事务中写入；`run.finished` 与终态同时出现。
+- 最终文本先写入消息文件，随后 `output_ref`、`task_outcome` 和终态在同一个 SQLite 事务中写入；`run.finished` 与终态同时出现。
 - 多轮上下文不是从 LangGraph checkpoint 恢复，而是从之前 Run 的 `runs.input` 和 `runs.output` 重新组装。
 
 ## 2. 总体数据流
@@ -89,7 +92,7 @@ flowchart LR
 
 数据库接受事务内写入：
 
-- `runs`：`workspace_id`、`input`、`agent_ref`、`execution_context`、完整 `config_snapshot`、`run_seq`、请求指纹、`QUEUED`、`state_version=0`、`next_event_seq=1` 和审计字段。
+- `runs`：`workspace_id`、`input_ref/input_digest/input_chars`、`agent_ref`、`execution_context`、`config_snapshot_ref/config_snapshot_digest/config_snapshot_bytes`、`run_seq`、请求指纹、`QUEUED`、`state_version=0`、`next_event_seq=1` 和审计字段。
 - `run_events`：内部 `run.accepted`，公开投影为 `message.accepted`；同时分配 Session 级 `session_seq`。
 - `sessions.next_run_seq/next_event_seq`：分别增加 1，并更新 Session 审计字段。
 - `sessions/<session_id>/transcript-000001.jsonl`：写入 `user` 记录；Run 正常结束后补写对应的 `assistant` 结果记录。
@@ -122,9 +125,9 @@ Worker 拿到 Run 后：
 - 从 `runs.config_snapshot.skills[].bundle_ref` 读取固定 Skill 快照。
 - 每个激活 Skill 单独追加一条 `skill.activated` 事件。
 - Skill 正文放入 System Prompt；正文和资源本身不复制进 SQLite。
-- 从 `runs` 查询当前 Session 更早的 Run，用 `input` 和 `output` 重建对话历史。
+- 从 `runs` 查询当前 Session 更早的 Run，按 `input_ref`/`output_ref` 读回 `input` 和 `output` 重建对话历史。
 
-因此，同一 Session 的连续轮次依赖 `runs.output` 持久化，而不依赖 LangGraph Checkpointer。历史超过上下文预算时只在本次运行内存中摘要，摘要不落库。
+因此，同一 Session 的连续轮次依赖 `runs.output_ref` 指向的消息文件持久化，而不依赖 LangGraph Checkpointer。历史超过上下文预算时只在本次运行内存中摘要，摘要不落库。
 
 ### S05 模型调用与消息
 
@@ -138,7 +141,7 @@ Worker 拿到 Run 后：
 
 流式模型处理时：
 
-- 每个 `message.delta` 都单独提交到 `run_events`，并更新 `runs.next_event_seq` 和 Run 审计字段。
+- 每个 `message.delta` 的正文追加到 Session content JSONL，信封写入 `run_events`，并更新 `runs.next_event_seq` 和 Run 审计字段。
 - 模型回复完整后写 `message.completed`。
 - 完整模型请求、隐藏推理和原始 Provider 响应不单独持久化。
 
@@ -149,12 +152,13 @@ LangGraph 图当前使用进程内 `MemorySaver`，且 `thread_id=attempt_id`。
 一次 Python/命令工具调用按以下顺序发生：
 
 1. Harness 在内存中取得模型生成的 Python 或 shell 代码。
-2. `prepare_tool` 事务写 `tool_executions(PREPARED)` 和 `tool.prepared`。
+2. `prepare_tool` 事务写 `tool_executions(PREPARED)`（含 `input_digest/input_bytes`）和 `tool.prepared`，事件正文（含实际代码或命令）写入 Session content JSONL，`data_ref` 入库。
 3. `start_tool` 事务把工具改为 `RUNNING` 并写 `tool.started`。
 4. Harness 写 `skill.started`。
 5. `LocalProcessBackend.submit` 在绑定模式创建 `<user_root>/tool-output/<session_id>/<run_id>/<operation_id>/`，legacy 模式继续使用 `operations/<operation_id>/`。
 6. `input.txt` 先原子保存原始 stdin；Python 使用 `python3 -`、shell 使用 `/bin/bash -s` 从 stdin 执行，不把过程脚本写进 Workspace。
-7. stdout/stderr 持续写入该操作目录下的 `stdout.log` 和 `stderr.log`；超时诊断也写入 `stderr.log`。
+7. stdout/stderr 持续写入该操作目录下的 `stdout.log` 和 `stderr.log`；同时适配器通过 `on_output` 回调把每个分片交给 Harness，Harness 立即写 `tool.output` 事件，实现边执行边推送。
+8. 超时诊断也写入 `stderr.log`。
 
 `tool_executions` 保存 `workspace_id`、`logical_call_key`、`tool_ref`、参数 digest、`input_ref`、`input_revision_id`、`result_revision_id`、执行 profile、状态和结果引用。`input_ref` 仍是本地引用字符串，不是集中存储的操作输入对象。
 
@@ -167,11 +171,11 @@ LangGraph 图当前使用进程内 `MemorySaver`，且 `thread_id=attempt_id`。
 3. 绑定模式不覆盖另一个 current 副本；`project_path` 本身是正式执行树，revision 保存可恢复副本。
 4. 生成 manifest digest 和 changed paths。
 5. Harness 在 Workspace lease/epoch 与父修订匹配时插入 `workspace_revisions`，CAS 更新 `workspaces.current_revision`。
-6. Harness 读取日志，写最多各 8192 字节的 `tool.output` 事件，再写 `workspace.committed`。
-7. `finish_tool` 更新 `tool_executions.status/result_ref/result_revision_id/error`，并写 `tool.finished` 或 `tool.unknown`。
+6. Harness 已按分片实时写 `tool.output` 事件；提交成功后写 `workspace.committed`。
+7. `finish_tool` 更新 `tool_executions.status/result_ref/result_revision_id/error`，并写 `tool.finished` 或 `tool.unknown`；`tool.finished` 只公开状态和错误，不再暴露主机文件路径。
 8. Harness 写 `skill.finished`。
 
-当前 `result_ref` 指向 stdout 日志文件，Revision 另由 `result_revision_id` 关联。`changed_paths` 已写入 workspace 事件。
+当前 `result_ref` 指向 stdout 日志文件，仅作为 Runtime 内部恢复引用，不进入公开事件；Revision 另由 `result_revision_id` 关联。`changed_paths` 已写入 workspace 事件。
 
 当前文件事实同时落在文件系统和数据库：
 
@@ -185,7 +189,7 @@ Harness 得到最终文本后：
 
 1. 追加 `message.completed`。
 2. 在一个事务中把 Run 更新为 `SUCCEEDED`。
-3. 同事务写入 `task_outcome`、最终 `output`、`state_version+1` 和 `run.finished`。
+3. 最终文本先写入消息文件，再同事务写入 `output_ref`、`task_outcome`、`state_version+1` 和 `run.finished`。
 4. 同事务结束 Attempt、清空 `runs.active_attempt_id` 和 `sessions.active_run_id`。
 
 `SUCCEEDED` 只表示运行协议正常结束，`completed/partial/blocked` 才表达任务结果。模型错误、未配置模型或 Harness 异常走 `FAILED`，错误对象写入 `runs.error` 和 `run.finished`。
@@ -215,7 +219,7 @@ Harness 得到最终文本后：
 
 SSE 的事件不是独立通道：所有 `tool.*`、`message.*`、`skill.*`、`workspace.committed` 和 Run 状态事件都先进入 `run_events`，再被轮询并发送。
 
-下一轮 Run 通过 `conversation_history` 读取同 Session 更早 Run 的 `input/output`。Workspace 通过新 Attempt 复制 current 来延续文件成果。
+下一轮 Run 通过 `conversation_history` 按引用读取同 Session 更早 Run 的 `input/output`。Workspace 通过新 Attempt 复制 current 来延续文件成果。
 
 ## 4. SQLite 表的实际角色
 
@@ -225,11 +229,11 @@ SSE 的事件不是独立通道：所有 `tool.*`、`message.*`、`skill.*`、`w
 | `workspace_revisions` | 是 | 修订链、manifest digest/ref、不可变副本引用 | 每个成功工具提交后 |
 | `sessions` | 是 | thread、Session 序号、epoch、active Run | Session 创建、领取/结束 |
 | `session_requests` | 是 | Session 创建幂等键和指纹 | Session 创建事务 |
-| `runs` | 是 | 输入、Workspace、快照、状态、结果、错误、事件水位 | 接受、领取、终态 |
+| `runs` | 是 | 输入/输出/快照的引用与摘要、Workspace、状态、结果、错误、事件水位 | 接受、领取、终态 |
 | `run_attempts` | 是 | worker、Session/Workspace epoch、租约、工作区起点 | 领取、终态 |
 | `tool_executions` | 是 | Workspace、逻辑调用、参数摘要、输入/结果修订、状态 | 工具准备、启动、结束 |
 | `pending_responses` | 否 | 澄清/核验问题和回应 | 预留；缺写入路径 |
-| `run_events` | 是 | 可回放事件、消息片段、工具/Skill 进展 | 流程每个可见节点 |
+| `run_events` | 是 | 事件信封与正文引用（`data_ref/offset/bytes/digest`），正文在 content JSONL | 流程每个可见节点 |
 | `artifacts` | 否 | 成果引用、MIME、digest、provenance | 预留；文件结果当前通过 Workspace 文件接口读取 |
 
 每次插入 `run_events` 都会在同一事务中增加 `runs.next_event_seq`，并更新 Run 的 `date_updated/updated_by`。因此高频 `message.delta` 也会持续更新 Run 审计时间。
@@ -238,16 +242,22 @@ SSE 的事件不是独立通道：所有 `tool.*`、`message.*`、`skill.*`、`w
 
 | 位置 | 何时产生 | 内容 | 何时读取 |
 | --- | --- | --- | --- |
-| `.runtime/state.db` | Runtime 启动和业务写入 | 全部运行事实与事件 | API、Worker、恢复和上下文组装 |
+| `.runtime/state.db` | Runtime 启动和业务写入 | 关系/状态/引用/摘要；正文引用指向下列文件 | API、Worker、恢复和上下文组装 |
 | `skill-snapshots/<scope-digest>/<digest>/` | Run 接受前解析 Skill | SKILL.md 和全部支持文件 | Run 激活 Skill 时 |
 | UserBinding `project_path` | Session 创建、工具执行 | 当前用户 Project 正式文件及 `.forge` 元数据 | 文件 API、下一轮 Run |
-| `<user_root>/sessions/<session_id>/` | Session 创建或启动回填 | `session.json` 和 JSONL transcript | 会话恢复、审计和用户目录检查 |
+| `<base>/sessions/<session_id>/content-*.jsonl` | 每个可见事件 | 事件正文 payload，按 `session_seq` 追加、按 offset 定位 | SSE 回放、事件历史、恢复核验 |
+| `<base>/sessions/<session_id>/messages/<run_id>-*.json` | Run 接受、终态 | 用户输入/助手回复正文（不可变对象） | 多轮上下文、消息查询 |
+| `<base>/sessions/<session_id>/snapshots/<run_id>.json` | Run 接受 | 不可变 config_snapshot 正文 | 领取执行、快照查询 |
+| `<base>/sessions/<session_id>/pending/*.json` | 等待/回应 | 待决请求与已确认回应正文 | 澄清恢复（预留） |
+| `<user_root>/sessions/<session_id>/session.json` 与 `transcript-*.jsonl` | Session 创建或启动回填 | 元数据与消息投影（transcript 非事实源） | 会话恢复、审计和用户目录检查 |
 | `<user_root>/tool-output/<session_id>/<run_id>/` | 工具执行 | 每次操作的 stdin、stdout/stderr 与引用 | Harness、诊断 |
 | `<project_path>/.forge/revisions/<revision_id>/` | 工具成功提交后 | 该次提交的完整文件副本 | 恢复和审计 |
 | `.runtime/workspace-store/current/<workspace_id>/` | legacy Session 创建、工具成功提交 | 旧模式当前正式文件及 manifest | 兼容测试 |
 | `.runtime/operations/<operation_id>/input.txt` | 子进程启动前 | Python/命令的原始 stdin | Harness、诊断 |
 | `.runtime/operations/<operation_id>/stdout.log` | 子进程运行时 | 有界 stdout | Harness 读取、`result_ref` 指向 |
 | `.runtime/operations/<operation_id>/stderr.log` | 子进程运行时 | 有界 stderr | Harness 读取和错误摘要 |
+
+`<base>`：绑定模式为 UserBinding `user_path`，legacy 为 `.runtime`（`state.db` 所在目录）。
 
 Skill 源目录 `skills/` 是编辑源，不是已接受 Run 的运行源。Run 接受后只使用 digest 对应的快照目录。
 
@@ -278,7 +288,7 @@ Skill 源目录 `skills/` 是编辑源，不是已接受 Run 的运行源。Run 
 2. LangGraph 使用 `MemorySaver`，没有持久 Checkpointer；恢复只能依赖 SQLite 业务事实重新组装，不能继续原图节点。
 3. `artifacts` 尚未形成真实写入链；Workspace revision 已接入 SQLite 和事件链。
 4. `tool_executions.input_ref` 目前只是字符串引用，`process_ref`、`external_operation_ref`、`checkpoint_ref` 未写入。
-5. `tool.output` 在工具结束后批量落库，不是实时同步每个日志分片。
+5. `tool.output` 已改为按分片实时写入事件，但分片粒度固定为 4 KiB，且事件表会随高频输出增长；尚未做事件裁剪或归档。
 6. `pending_responses` 有读写接口，但没有创建待决项的流程，澄清恢复尚未闭环。
 7. 运行中取消不会调用底层进程取消，也没有独立的取消收尾协程。
 8. Workspace lease/epoch 已阻止旧 Attempt 发布修订，但没有心跳续约、租约超时扫描和自动接管。
@@ -289,13 +299,14 @@ Skill 源目录 `skills/` 是编辑源，不是已接受 Run 的运行源。Run 
 
 | 要恢复的问题 | 当前事实来源 | 当前限制 |
 | --- | --- | --- |
-| 用户提交过什么 | `runs.input/config_snapshot` | 可读取 |
+| 用户提交过什么 | `runs.input_ref`、`runs.config_snapshot_ref` → 文件 | 按引用读取并校验 digest |
 | 请求是否重复 | `runs`/`session_requests` 唯一键和指纹 | 路径可用 |
 | 当前由谁执行 | `run_attempts`、`sessions.active_run_id`、`runs.active_attempt_id` | 没有真实租约回收 |
 | 工具计划做了什么 | `tool_executions` | PID 和外部句柄没有持久化 |
-| 工具实际输出是什么 | `run_events.tool.output` 和 operations 日志 | DB 只截取 8 KiB/流 |
+| 工具实际输入是什么 | `run_events.tool.prepared` 的 content 记录和 operations `input.txt` | 事件与文件各存一份 |
+| 工具实际输出是什么 | `run_events.tool.output` 的 content 记录和 operations 日志 | 事件与文件各存一份 |
 | 文件成果在哪里 | `project_path`、`workspace_revisions/manifests` 和 `workspace.committed` | legacy 与绑定路径两套适配 |
-| 模型最后说了什么 | `runs.output` 和 `message.completed` | 流中间态只有 delta 事件 |
-| 如何继续下一轮 | `runs.input/output` + Workspace current | 不依赖 LangGraph checkpoint |
+| 模型最后说了什么 | `runs.output_ref` 指向的消息文件和 `message.completed` content 记录 | 流中间态只有 delta |
+| 如何继续下一轮 | `runs.input_ref/output_ref` + Workspace current | 不依赖 LangGraph checkpoint |
 
 这份 As-Is 文档描述的是当前代码行为。任何表结构、持久化时刻、恢复语义或事务边界变化，都必须同步更新本文、[database.md](database.md)、[agent-workflow.md](agent-workflow.md) 和相关 TC。

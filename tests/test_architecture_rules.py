@@ -54,6 +54,36 @@ class ArchitectureRulesTests(unittest.TestCase):
         self.assertNotIn("one_live_attempt", self.sql)
         self.assertNotIn("one_running_run_per_session", self.sql)
 
+    def test_postgres_stores_references_not_large_bodies(self):
+        forbidden = {"input", "output", "config_snapshot", "data", "payload", "response_payload"}
+        for table, body in self.tables:
+            columns = set(re.findall(r"^ ([a-z][a-z0-9_]*)\s+", body, re.M))
+            self.assertFalse(forbidden & columns, (table, forbidden & columns))
+            for column, _kind in re.findall(r"^ ([a-z][a-z0-9_]*)\s+(jsonb)\b", body, re.M):
+                self.assertIn(
+                    column,
+                    {"execution_context", "process_ref", "error", "provenance"},
+                    (table, column),
+                )
+        for expected in (
+            "input_ref",
+            "input_digest",
+            "input_chars",
+            "config_snapshot_ref",
+            "config_snapshot_digest",
+            "config_snapshot_bytes",
+            "output_ref",
+            "output_digest",
+            "output_chars",
+            "data_ref",
+            "data_offset",
+            "data_bytes",
+            "data_digest",
+            "payload_ref",
+            "response_payload_ref",
+        ):
+            self.assertIn(expected, self.sql)
+
     def test_resource_api_uses_readonly_audit_fields(self):
         spec = json.loads((ROOT / "docs/api/openapi.json").read_text())
         for name in ("Session", "Message"):

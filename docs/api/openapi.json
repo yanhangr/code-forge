@@ -730,93 +730,6 @@
         }
       }
     },
-    "/v1/get-tool-execution": {
-      "get": {
-        "operationId": "getToolExecution",
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "operation_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolExecutionEnvelope"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Conflict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Dependency unavailable",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/list-session-messages": {
       "get": {
         "operationId": "listSessionMessages",
@@ -1191,14 +1104,6 @@
               "type": "string",
               "format": "uuid"
             }
-          },
-          {
-            "name": "storage_root",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -1276,14 +1181,6 @@
             "schema": {
               "type": "string",
               "format": "uuid"
-            }
-          },
-          {
-            "name": "storage_root",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
             }
           },
           {
@@ -1822,17 +1719,6 @@
                 },
                 "maxItems": 30,
                 "default": null
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "storage_root": {
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
               },
               {
                 "type": "null"
@@ -2511,66 +2397,6 @@
           "content",
           "digest",
           "truncated"
-        ]
-      },
-      "ToolExecution": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "message_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "tool_ref": {
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/ToolStatus"
-          },
-          "input": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "stdout": {
-            "type": "string"
-          },
-          "stderr": {
-            "type": "string"
-          },
-          "truncated": {
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Error"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "operation_id",
-          "message_id",
-          "tool_ref",
-          "status",
-          "input",
-          "stdout",
-          "stderr",
-          "truncated",
-          "error"
         ]
       },
       "Health": {
@@ -3268,12 +3094,16 @@
               },
               "input_summary": {
                 "type": "string"
+              },
+              "input": {
+                "type": "string"
               }
             },
             "required": [
               "operation_id",
               "tool_ref",
-              "input_summary"
+              "input_summary",
+              "input"
             ]
           }
         },
@@ -3461,16 +3291,6 @@
                   "CANCELLED"
                 ]
               },
-              "result_ref": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "error": {
                 "anyOf": [
                   {
@@ -3485,7 +3305,6 @@
             "required": [
               "operation_id",
               "status",
-              "result_ref",
               "error"
             ]
           }
@@ -4222,32 +4041,6 @@
           },
           "data": {
             "$ref": "#/components/schemas/FileContent"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "data"
-        ]
-      },
-      "ToolExecutionEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "type": "string",
-            "enum": [
-              "0000"
-            ]
-          },
-          "message": {
-            "type": "string",
-            "enum": [
-              "success"
-            ]
-          },
-          "data": {
-            "$ref": "#/components/schemas/ToolExecution"
           }
         },
         "required": [

@@ -29,7 +29,11 @@ from code_forge.contracts import (
 )
 from code_forge.execution.local_process_backend import LocalProcessBackend
 from code_forge.harness.context import ConversationContextManager
-from code_forge.harness.tooling import build_operation_spec, persist_workspace_commit
+from code_forge.harness.tooling import (
+    build_operation_spec,
+    persist_workspace_commit,
+    select_active_skill,
+)
 from code_forge.persistence.sqlite_store import SqliteRuntimeStore
 from code_forge.workspace.store import WorkspaceStore
 
@@ -281,9 +285,14 @@ class LangGraphHarness:
                         "type": "object",
                         "properties": {
                             "code": {"type": "string"},
-                            "skill": {"type": "string"},
+                            "skill": {
+                                "type": "string",
+                                "description": (
+                                    "Name of an active Skill. Omit when no Skill is active."
+                                ),
+                            },
                         },
-                        "required": ["code", "skill"],
+                        "required": ["code"],
                     },
                 },
             },
@@ -296,9 +305,14 @@ class LangGraphHarness:
                         "type": "object",
                         "properties": {
                             "command": {"type": "string"},
-                            "skill": {"type": "string"},
+                            "skill": {
+                                "type": "string",
+                                "description": (
+                                    "Name of an active Skill. Omit when no Skill is active."
+                                ),
+                            },
                         },
-                        "required": ["command", "skill"],
+                        "required": ["command"],
                     },
                 },
             },
@@ -318,6 +332,9 @@ class LangGraphHarness:
             arguments = json.loads(function.get("arguments") or "{}")
         except json.JSONDecodeError:
             arguments = {}
+        skill_name, skill_error = select_active_skill(run, arguments.get("skill"))
+        if skill_error is not None:
+            return skill_error
         if tool_name == "execute_python":
             return await self._run_code_tool(
                 run,
@@ -328,7 +345,7 @@ class LangGraphHarness:
                 working_directory,
                 "python",
                 arguments.get("code", ""),
-                arguments.get("skill") or "analysis-report",
+                skill_name or "",
                 actor,
             )
         if tool_name == "execute_command":
@@ -341,7 +358,7 @@ class LangGraphHarness:
                 working_directory,
                 "command",
                 arguments.get("command", ""),
-                arguments.get("skill") or "analysis-report",
+                skill_name or "",
                 actor,
             )
         return f"Unsupported tool: {tool_name}"
@@ -385,19 +402,21 @@ class LangGraphHarness:
             input_summary=f"langgraph {tool_ref} call",
             actor=actor,
             workspace_id=workspace_id,
+            input_text=code,
         )
         self.store.start_tool(run["scope_id"], operation_id, actor)
-        self.store.append_event(
-            run["scope_id"],
-            run["id"],
-            EventType.SKILL_STARTED,
-            {
-                "name": skill_name,
-                "version": self._skill_version(run, skill_name),
-                "operation_id": operation_id,
-            },
-            actor,
-        )
+        if skill_name:
+            self.store.append_event(
+                run["scope_id"],
+                run["id"],
+                EventType.SKILL_STARTED,
+                {
+                    "name": skill_name,
+                    "version": self._skill_version(run, skill_name),
+                    "operation_id": operation_id,
+                },
+                actor,
+            )
         spec = build_operation_spec(
             operation_id=operation_id,
             run_id=run["id"],
@@ -413,19 +432,11 @@ class LangGraphHarness:
             output_limit_bytes=256 * 1024,
             environment_profile_ref="local@1",
         )
-        await self.execution.submit(spec)
+        await self.execution.submit(
+            spec,
+            on_output=self._output_sink(run["scope_id"], operation_id, actor),
+        )
         result = await self._wait_for_operation(operation_id)
-        for stream, ref in (("stdout", result.stdout_ref), ("stderr", result.stderr_ref)):
-            text = self._read_log(ref)
-            if text:
-                self.store.append_tool_output(
-                    run["scope_id"],
-                    operation_id,
-                    stream,
-                    text[:8192],
-                    len(text) > 8192,
-                    actor,
-                )
         tool_status = result.status
         tool_error = None
         result_revision_id = None
@@ -475,18 +486,19 @@ class LangGraphHarness:
             if tool_status in {ToolStatus.SUCCEEDED, ToolStatus.FAILED, ToolStatus.CANCELLED}
             else ToolStatus.FAILED.value
         )
-        self.store.append_event(
-            run["scope_id"],
-            run["id"],
-            EventType.SKILL_FINISHED,
-            {
-                "name": skill_name,
-                "version": self._skill_version(run, skill_name),
-                "operation_id": operation_id,
-                "status": skill_finished_status,
-            },
-            actor,
-        )
+        if skill_name:
+            self.store.append_event(
+                run["scope_id"],
+                run["id"],
+                EventType.SKILL_FINISHED,
+                {
+                    "name": skill_name,
+                    "version": self._skill_version(run, skill_name),
+                    "operation_id": operation_id,
+                    "status": skill_finished_status,
+                },
+                actor,
+            )
         stdout_text = self._read_log(result.stdout_ref).strip()
         stderr_text = self._read_log(result.stderr_ref).strip()
         return (
@@ -512,6 +524,21 @@ class LangGraphHarness:
             if result.status != ToolStatus.RUNNING:
                 return result
             await asyncio.sleep(0.05)
+
+    def _output_sink(self, scope_id: str, operation_id: str, actor: str) -> Any:
+        def sink(stream: str, text: str, truncated: bool) -> None:
+            if not text and not truncated:
+                return
+            self.store.append_tool_output(
+                scope_id,
+                operation_id,
+                stream,
+                text,
+                truncated,
+                actor,
+            )
+
+        return sink
 
     def _finish_failed(
         self,

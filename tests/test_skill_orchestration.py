@@ -12,6 +12,7 @@ from code_forge.contracts import (
     RunRequest,
     SkillBinding,
 )
+from code_forge.harness.tooling import active_skill_names, select_active_skill
 from code_forge.skills.manual_skill_resolver import ManualSkillResolver
 
 
@@ -87,6 +88,27 @@ class SkillOrchestrationTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
         self.assertEqual(error.exception.code, ErrorCode.SKILL_INCOMPATIBLE)
+
+
+class FrozenSkillSelectionTests(unittest.TestCase):
+    def test_model_can_only_select_frozen_candidates(self):
+        run = {
+            "config_snapshot": {
+                "skills": [{"name": "analysis-report"}, {"name": "python-analysis"}]
+            }
+        }
+        self.assertEqual(
+            active_skill_names(run),
+            ("analysis-report", "python-analysis"),
+        )
+        self.assertEqual(select_active_skill(run, "python-analysis"), ("python-analysis", None))
+        skill_name, error = select_active_skill(run, "filesystem")
+        self.assertIsNone(skill_name)
+        self.assertIsNotNone(error)
+        self.assertIn("filesystem", error)
+
+    def test_no_active_skill_ignores_model_declared_skill(self):
+        self.assertEqual(select_active_skill({}, "filesystem"), ("", None))
 
 
 if __name__ == "__main__":

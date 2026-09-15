@@ -17,7 +17,7 @@ erDiagram
     RUNS ||--o{ ARTIFACTS : produces
 ```
 
-scope_id 为用户级执行隔离域，等于 user_ref。Runtime 不创建用户、角色或 Skill 发布表；Platform 负责身份、租户/用户关系、项目绑定和授权，并下发 UserBinding。手工 Skill 的确定包引用放在 runs.config_snapshot，仍由 Runtime 只读消费。Runtime 进程不持有用户工作目录、Skill 列表或会话状态，Worker 只从持久化的 RunContext 恢复本次执行所需引用。
+scope_id 为用户级执行隔离域，等于 user_ref。Runtime 不创建用户、角色或 Skill 发布表；Platform 负责身份、租户/用户关系、项目绑定和授权，并下发 UserBinding。手工 Skill 的确定包引用放在 runs.config_snapshot_ref 指向的不可变快照文件，仍由 Runtime 只读消费。Runtime 进程不持有用户工作目录、Skill 列表或会话状态，Worker 只从持久化的 RunContext 恢复本次执行所需引用。
 
 ## 2. API 与表字段映射
 
@@ -27,12 +27,15 @@ scope_id 为用户级执行隔离域，等于 user_ref。Runtime 不创建用户
 | RunCreate.context | runs.execution_context | 规范化 scope/actor/external 及 UserBinding；无真实凭据 |
 | UserBinding.scope_id/user_ref | workspaces.scope_id/user_ref | 用户稳定 ID，两个字段必须一致 |
 | UserBinding.tenant_ref | workspaces.tenant_ref | Platform 管理的租户稳定引用，不复制业务权限模型 |
-| UserBinding.user_path | workspaces.user_path、runs.config_snapshot | Platform 下发的用户根路径和用户隔离边界 |
-| UserBinding.storage_root/user_rel_path | workspaces.storage_root/user_rel_path、runs.config_snapshot | 稳定 NAS 根与用户逻辑路径；绝对路径由两者组合解析 |
-| UserBinding.project_ref/project_path | workspaces.project_ref/project_path、runs.config_snapshot | Project 稳定引用与执行根；project_path 位于 user_path 下，接受 Run 时冻结 |
-| RunCreate.skill_paths | runs.config_snapshot.effective_skill_paths | 缺省为 user_path/config/skills；显式传入时按顺序覆盖默认路径，可为空以禁用默认 Skill |
+| UserBinding.user_path | workspaces.user_path、runs.config_snapshot_ref | Platform 下发的用户根路径和用户隔离边界 |
+| UserBinding.storage_root/user_rel_path | workspaces.storage_root/user_rel_path、runs.config_snapshot_ref | 稳定 NAS 根与用户逻辑路径；绝对路径由两者组合解析 |
+| UserBinding.project_ref/project_path | workspaces.project_ref/project_path、runs.config_snapshot_ref | Project 稳定引用与执行根；project_path 位于 user_path 下，接受 Run 时冻结 |
+| RunCreate.skill_paths | runs.config_snapshot_ref 内 effective_skill_paths | 缺省为 user_path/config/skills；显式传入时按顺序覆盖默认路径，可为空以禁用默认 Skill |
 | date_created/created_by/date_updated/updated_by | 所有自管表对应列；Session/Run读接口同名字段 | 由服务生成，不接受客户端自由写入 |
-| Run.snapshot / RunSnapshot | runs.config_snapshot | 不可变对象，字段与核心 DTO/OpenAPI 完全一致 |
+| Run.snapshot / RunSnapshot | runs.config_snapshot_ref（+ digest/bytes） | 快照正文在不可变文件，PG 只存引用、摘要与长度 |
+| Run.input / Run.output（正文） | runs.input_ref/output_ref（+ digest/chars） | 用户输入与助手回复正文在 Session 文件，PG 不存大文本 |
+| Event.data（正文） | run_events.data_ref/data_offset/data_bytes/data_digest | 事件 payload 在 Session content JSONL，PG 存信封与定位 |
+| PendingResponse 正文 | pending_responses.payload_ref/response_payload_ref（+ digest/bytes） | 正文在文件，PG 只存引用 |
 | AcceptedRun.reused | 响应时计算 | 不存数据库；判断命中已有请求 |
 | status/state_version/task_outcome | runs 对应列 | 使用核心枚举与状态机 |
 | wait_reason | runs.wait_reason | 仅等待状态非空，离开等待时清空 |
@@ -44,7 +47,19 @@ scope_id 为用户级执行隔离域，等于 user_ref。Runtime 不创建用户
 | PendingResponse.prompt | pending_responses.payload.prompt | payload 结构由 kind 的处理器校验 |
 | PendingResponse.resolved | resolved_at 非空 | 不额外保存第二个布尔事实 |
 
-查询层可以投影字段，但不能建立另一套可独立写的运行状态。config_snapshot、request_fingerprint、input、run_seq 在接受后不可变；禁止通用 ORM patch API 修改这些字段。SDK 序列化 JSON 时必须保存所有必需快照字段，不能用字符串 `repr(dataclass)`。
+查询层可以投影字段，但不能建立另一套可独立写的运行状态。config_snapshot_ref、input_ref、request_fingerprint、run_seq 在接受后不可变；禁止通用 ORM patch API 修改这些字段。SDK 序列化 JSON 时必须保存所有必需快照字段，不能用字符串 `repr(dataclass)`。
+
+### 2.1 正文与引用分离（PG + JSONL）
+
+目标 PostgreSQL 实例单字段最长 4000 字符且不允许裁剪，因此自管表只保存关系、状态、序号、幂等、引用、摘要与长度，正文全部外置到 User Root：
+
+- `runs.input_ref`/`input_digest`/`input_chars` 指向 `sessions/<session_id>/messages/<run_id>-user.json`。
+- `runs.output_ref`/`output_digest`/`output_chars` 指向 `sessions/<session_id>/messages/<run_id>-assistant.json`。
+- `runs.config_snapshot_ref`/`config_snapshot_digest`/`config_snapshot_bytes` 指向 `sessions/<session_id>/snapshots/<run_id>.json`。
+- `run_events.data_ref`/`data_offset`/`data_bytes`/`data_digest` 指向 `sessions/<session_id>/content-*.jsonl` 的一条记录。
+- `pending_responses.*_ref/digest/bytes` 指向 `sessions/<session_id>/pending/*.json`。
+
+写法规则：先写正文并 `fsync`，再提交引用它的数据库事务；事务失败只产生无引用内容（孤儿），由 GC 延后回收，绝不出现"数据库已承诺、正文不存在"。读取时按引用取回正文并校验摘要；缺失或摘要不符映射为 `DEPENDENCY_UNAVAILABLE`。适配器读接口仍返回完整文本，公共 DTO/OpenAPI 不变。其余保持 `text` 的引用/路径列都带 `CHECK(length(col) <= 4000)`；`jsonb` 仅保留 `execution_context/process_ref/error/provenance` 并同样受限。
 
 ## 3. 统一锁顺序
 
@@ -56,7 +71,7 @@ scope_id 为用户级执行隔离域，等于 user_ref。Runtime 不创建用户
 
 ### 接受 Run
 
-校验 Session scope 和 UserBinding 与持久化 Project Workspace 一致，锁 Session，重新查 idempotency_key。存在则比较 fingerprint：相同读取原 Run 返回；不同报冲突。不存在则从 next_run_seq 分配顺序、插入含 workspace_id/config_snapshot 的 QUEUED Run、写第一条接受事件、更新 Session 序号，一次提交。
+校验 Session scope 和 UserBinding 与持久化 Project Workspace 一致，锁 Session，重新查 idempotency_key。存在则比较 fingerprint：相同读取原 Run 返回；不同报冲突。不存在则从 next_run_seq 分配顺序、先写输入正文与快照文件、再插入含 ref/digest 的 QUEUED Run、写第一条接受事件、更新 Session 序号，一次提交。
 
 只有事务提交之后响应 202。外部快照字节先保存，事务失败产生的无引用内容可延后清理。已保存的幂等记录不能因为任务完成立刻删除，否则网络重试可能重复任务。
 

@@ -36,6 +36,13 @@ from code_forge.contracts import (
     UserBinding,
     WorkspaceCommit,
 )
+from code_forge.persistence.content_store import (
+    ContentUnavailable,
+    FileContentStore,
+    ObjectRef,
+    canonical_json,
+    digest_text,
+)
 from code_forge.ports import RunRepository
 from code_forge.state_machine import RunState, transition
 
@@ -68,12 +75,14 @@ def _fingerprint(value: Any) -> str:
 class SqliteRuntimeStore:
     """Synchronous store used by HTTP workers and the async RunRepository."""
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, content_store: FileContentStore | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._content = content_store or FileContentStore()
+        self._legacy_root = self.path.parent
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.isolation_level = None
@@ -119,23 +128,29 @@ class SqliteRuntimeStore:
                 "artifacts",
             }
             if not core_tables.intersection(tables):
-                self.conn.executescript(self._schema_v4())
+                self.conn.executescript(self._schema_v5())
                 self.conn.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
                 return
             if version < 2:
                 self._migrate_v1_to_v4()
+                self._migrate_v4_to_v5()
                 return
             if version < 3:
                 self._migrate_v2_to_v4()
+                self._migrate_v4_to_v5()
                 return
             if version < 4:
                 self._migrate_v3_to_v4()
+                self._migrate_v4_to_v5()
+                return
+            if version < 5:
+                self._migrate_v4_to_v5()
                 return
             if version != self.SCHEMA_VERSION:
                 raise RuntimeError(
                     f"Unsupported SQLite schema version {version}; expected {self.SCHEMA_VERSION}"
                 )
-            self.conn.executescript(self._schema_v4())
+            self.conn.executescript(self._schema_v5())
 
     @staticmethod
     def _schema_v4() -> str:
@@ -369,6 +384,318 @@ class SqliteRuntimeStore:
             ON run_events(scope_id,session_id,session_seq);
         """
 
+    @classmethod
+    def _schema_v5(cls) -> str:
+        """v5 externalizes message, event, snapshot and pending bodies to refs.
+
+        PostgreSQL keeps only ``ref``/``digest``/``bytes``/``chars``; the same
+        column shape is mirrored here so the development adapter exercises the
+        production transaction and recovery semantics.
+        """
+
+        schema = cls._schema_v4()
+        replacements = [
+            (
+                "            input TEXT NOT NULL,\n"
+                "            agent_ref TEXT NOT NULL,\n"
+                "            execution_context TEXT NOT NULL,\n"
+                "            config_snapshot TEXT NOT NULL,\n",
+                "            input_ref TEXT NOT NULL,\n"
+                "            input_digest TEXT NOT NULL,\n"
+                "            input_chars INTEGER NOT NULL,\n"
+                "            agent_ref TEXT NOT NULL,\n"
+                "            execution_context TEXT NOT NULL,\n"
+                "            config_snapshot_ref TEXT NOT NULL,\n"
+                "            config_snapshot_digest TEXT NOT NULL,\n"
+                "            config_snapshot_bytes INTEGER NOT NULL,\n",
+            ),
+            (
+                "            output TEXT,\n            error TEXT,\n",
+                "            output_ref TEXT,\n"
+                "            output_digest TEXT,\n"
+                "            output_chars INTEGER,\n"
+                "            error TEXT,\n",
+            ),
+            (
+                "            params_digest TEXT NOT NULL,\n"
+                "            input_ref TEXT NOT NULL,\n"
+                "            status TEXT NOT NULL DEFAULT 'PREPARED',\n",
+                "            params_digest TEXT NOT NULL,\n"
+                "            input_ref TEXT NOT NULL,\n"
+                "            input_digest TEXT,\n"
+                "            input_bytes INTEGER,\n"
+                "            status TEXT NOT NULL DEFAULT 'PREPARED',\n",
+            ),
+            (
+                "            payload TEXT NOT NULL,\n"
+                "            response_key TEXT,\n"
+                "            response_digest TEXT,\n"
+                "            response_payload TEXT,\n",
+                "            payload_ref TEXT NOT NULL,\n"
+                "            payload_digest TEXT NOT NULL,\n"
+                "            payload_bytes INTEGER NOT NULL,\n"
+                "            response_key TEXT,\n"
+                "            response_digest TEXT,\n"
+                "            response_payload_ref TEXT,\n"
+                "            response_payload_digest TEXT,\n"
+                "            response_payload_bytes INTEGER,\n",
+            ),
+            (
+                "            type TEXT NOT NULL,\n"
+                "            data TEXT NOT NULL,\n"
+                "            occurred_at TEXT NOT NULL,\n",
+                "            type TEXT NOT NULL,\n"
+                "            data_ref TEXT NOT NULL,\n"
+                "            data_offset INTEGER NOT NULL,\n"
+                "            data_bytes INTEGER NOT NULL,\n"
+                "            data_digest TEXT NOT NULL,\n"
+                "            occurred_at TEXT NOT NULL,\n",
+            ),
+        ]
+        for old, new in replacements:
+            assert old in schema, f"v4 schema anchor missing: {old!r}"
+            schema = schema.replace(old, new, 1)
+        return schema
+
+    def _migrate_v4_to_v5(self) -> None:
+        """Externalize existing v4 bodies before dropping the large columns."""
+
+        with self._lock:
+            workspaces = [
+                dict(row) for row in self.conn.execute("SELECT id,user_path FROM workspaces")
+            ]
+            user_paths = {row["id"]: row["user_path"] for row in workspaces}
+            sessions = [
+                dict(row) for row in self.conn.execute("SELECT id,workspace_id FROM sessions")
+            ]
+            base_by_session = {
+                row["id"]: (
+                    Path(user_paths[row["workspace_id"]])
+                    if user_paths.get(row["workspace_id"])
+                    else self._legacy_root
+                )
+                for row in sessions
+            }
+            runs = [dict(row) for row in self.conn.execute("SELECT * FROM runs")]
+            events = [dict(row) for row in self.conn.execute("SELECT * FROM run_events")]
+            pendings = [dict(row) for row in self.conn.execute("SELECT * FROM pending_responses")]
+
+        add_columns = [
+            "ALTER TABLE runs ADD COLUMN input_ref TEXT",
+            "ALTER TABLE runs ADD COLUMN input_digest TEXT",
+            "ALTER TABLE runs ADD COLUMN input_chars INTEGER",
+            "ALTER TABLE runs ADD COLUMN config_snapshot_ref TEXT",
+            "ALTER TABLE runs ADD COLUMN config_snapshot_digest TEXT",
+            "ALTER TABLE runs ADD COLUMN config_snapshot_bytes INTEGER",
+            "ALTER TABLE runs ADD COLUMN output_ref TEXT",
+            "ALTER TABLE runs ADD COLUMN output_digest TEXT",
+            "ALTER TABLE runs ADD COLUMN output_chars INTEGER",
+            "ALTER TABLE tool_executions ADD COLUMN input_digest TEXT",
+            "ALTER TABLE tool_executions ADD COLUMN input_bytes INTEGER",
+            "ALTER TABLE pending_responses ADD COLUMN payload_ref TEXT",
+            "ALTER TABLE pending_responses ADD COLUMN payload_digest TEXT",
+            "ALTER TABLE pending_responses ADD COLUMN payload_bytes INTEGER",
+            "ALTER TABLE pending_responses ADD COLUMN response_payload_ref TEXT",
+            "ALTER TABLE pending_responses ADD COLUMN response_payload_digest TEXT",
+            "ALTER TABLE pending_responses ADD COLUMN response_payload_bytes INTEGER",
+            "ALTER TABLE run_events ADD COLUMN data_ref TEXT",
+            "ALTER TABLE run_events ADD COLUMN data_offset INTEGER",
+            "ALTER TABLE run_events ADD COLUMN data_bytes INTEGER",
+            "ALTER TABLE run_events ADD COLUMN data_digest TEXT",
+        ]
+        drop_columns = [
+            "ALTER TABLE runs DROP COLUMN input",
+            "ALTER TABLE runs DROP COLUMN config_snapshot",
+            "ALTER TABLE runs DROP COLUMN output",
+            "ALTER TABLE pending_responses DROP COLUMN payload",
+            "ALTER TABLE pending_responses DROP COLUMN response_payload",
+            "ALTER TABLE run_events DROP COLUMN data",
+        ]
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            for statement in add_columns:
+                self.conn.execute(statement)
+            for run in runs:
+                base = base_by_session.get(run["session_id"], self._legacy_root)
+                session_id = run["session_id"]
+                input_ref = self._write_message(
+                    base, session_id, run["id"], "user", run.get("input") or "", run["run_seq"]
+                )
+                snapshot_ref = self._write_snapshot(
+                    base, session_id, run["id"], run.get("config_snapshot") or "{}"
+                )
+                output_ref = None
+                if run.get("output") is not None:
+                    output_ref = self._write_message(
+                        base, session_id, run["id"], "assistant", run["output"], run["run_seq"]
+                    )
+                self.conn.execute(
+                    """
+                    UPDATE runs
+                    SET input_ref = ?, input_digest = ?, input_chars = ?,
+                        config_snapshot_ref = ?, config_snapshot_digest = ?,
+                        config_snapshot_bytes = ?,
+                        output_ref = ?, output_digest = ?, output_chars = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        input_ref.ref,
+                        input_ref.digest,
+                        len(run.get("input") or ""),
+                        snapshot_ref.ref,
+                        snapshot_ref.digest,
+                        snapshot_ref.bytes,
+                        output_ref.ref if output_ref else None,
+                        output_ref.digest if output_ref else None,
+                        len(run["output"]) if output_ref else None,
+                        run["id"],
+                    ),
+                )
+            for event in events:
+                base = base_by_session.get(event["session_id"], self._legacy_root)
+                data = json.loads(event.get("data") or "{}")
+                ref = self._write_event_content(base, event, data)
+                self.conn.execute(
+                    "UPDATE run_events SET data_ref = ?, data_offset = ?, data_bytes = ?, "
+                    "data_digest = ? WHERE event_id = ?",
+                    (ref.ref, ref.offset, ref.bytes, ref.digest, event["event_id"]),
+                )
+            for pending in pendings:
+                run = next((item for item in runs if item["id"] == pending["run_id"]), None)
+                if run is None:
+                    continue
+                base = base_by_session.get(run["session_id"], self._legacy_root)
+                payload = self._write_object(
+                    base,
+                    f"sessions/{run['session_id']}/pending/{pending['id']}-payload.json",
+                    (pending.get("payload") or "{}").encode("utf-8"),
+                )
+                response_ref = None
+                if pending.get("response_payload") is not None:
+                    response_ref = self._write_object(
+                        base,
+                        f"sessions/{run['session_id']}/pending/{pending['id']}-response.json",
+                        pending["response_payload"].encode("utf-8"),
+                    )
+                self.conn.execute(
+                    """
+                    UPDATE pending_responses
+                    SET payload_ref = ?, payload_digest = ?, payload_bytes = ?,
+                        response_payload_ref = ?, response_payload_digest = ?,
+                        response_payload_bytes = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        payload.ref,
+                        payload.digest,
+                        payload.bytes,
+                        response_ref.ref if response_ref else None,
+                        response_ref.digest if response_ref else None,
+                        response_ref.bytes if response_ref else None,
+                        pending["id"],
+                    ),
+                )
+            for statement in drop_columns:
+                self.conn.execute(statement)
+            self.conn.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+            self.conn.execute("COMMIT")
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+
+    def _write_message(
+        self,
+        base: Path,
+        session_id: str,
+        run_id: str,
+        role: str,
+        content: str,
+        run_seq: int,
+    ) -> ObjectRef:
+        payload = canonical_json(
+            {
+                "schema_version": "1",
+                "session_id": session_id,
+                "run_id": run_id,
+                "run_seq": run_seq,
+                "role": role,
+                "content": content,
+            }
+        ).encode("utf-8")
+        return self._write_object(
+            base, f"sessions/{session_id}/messages/{run_id}-{role}.json", payload
+        )
+
+    def _write_snapshot(self, base: Path, session_id: str, run_id: str, encoded: str) -> ObjectRef:
+        return self._write_object(
+            base, f"sessions/{session_id}/snapshots/{run_id}.json", encoded.encode("utf-8")
+        )
+
+    def _write_object(self, base: Path, relative_path: str, payload: bytes) -> ObjectRef:
+        return self._content.write_object(base, relative_path, payload)
+
+    def _content_base(self, session_row: Any) -> Path:
+        try:
+            user_path = session_row["user_path"]
+        except (KeyError, IndexError, TypeError):
+            user_path = ""
+        return Path(user_path) if user_path else self._legacy_root
+
+    def _base_for_session(self, session_id: str, conn: sqlite3.Connection | None = None) -> Path:
+        connection = conn or self.conn
+        row = connection.execute(
+            """
+            SELECT w.user_path
+            FROM sessions s
+            JOIN workspaces w ON w.scope_id = s.scope_id AND w.id = s.workspace_id
+            WHERE s.id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return Path(row["user_path"]) if row and row["user_path"] else self._legacy_root
+
+    def _read_message(self, base: Path, ref: str | None) -> str | None:
+        if not ref:
+            return None
+        try:
+            payload = self._content.read_object(base, ref)
+            record = json.loads(payload.decode("utf-8"))
+        except ContentUnavailable as exc:
+            raise self._content_unavailable(exc) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self._content_unavailable(exc) from exc
+        return record.get("content", "")
+
+    def _read_object_json(self, base: Path, ref: str | None) -> Any:
+        if not ref:
+            return None
+        try:
+            payload = self._content.read_object(base, ref)
+            return json.loads(payload.decode("utf-8"))
+        except ContentUnavailable as exc:
+            raise self._content_unavailable(exc) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self._content_unavailable(exc) from exc
+
+    @staticmethod
+    def _content_unavailable(exc: Exception) -> DomainError:
+        return DomainError(ErrorCode.DEPENDENCY_UNAVAILABLE, f"Content is unavailable: {exc}")
+
+    def _write_event_content(self, base: Path, event: dict[str, Any], data: dict[str, Any]):
+        record = {
+            "schema_version": "1",
+            "record_id": event["event_id"],
+            "session_id": event["session_id"],
+            "run_id": event["run_id"],
+            "session_seq": int(event["session_seq"]),
+            "kind": "event",
+            "type": event["type"],
+            "occurred_at": event["occurred_at"],
+            "data": data,
+        }
+        return self._content.append_record(base, f"sessions/{event['session_id']}", record)
+
     def _migrate_v1_to_v4(self) -> None:
         tables = [
             "workspaces",
@@ -531,7 +858,7 @@ class SqliteRuntimeStore:
           ON s.scope_id=r.scope_id AND s.id=r.session_id;
 
         {drop_sql}
-        PRAGMA user_version={self.SCHEMA_VERSION};
+        PRAGMA user_version=4;
         COMMIT;
         """
         try:
@@ -547,7 +874,7 @@ class SqliteRuntimeStore:
     def _migrate_v2_to_v4(self) -> None:
         """Add user-facing logical paths and Session event projection fields."""
 
-        migration_sql = f"""
+        migration_sql = """
         BEGIN IMMEDIATE;
         ALTER TABLE workspaces
             ADD COLUMN tenant_ref TEXT NOT NULL DEFAULT 'legacy-tenant:default';
@@ -604,7 +931,7 @@ class SqliteRuntimeStore:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_events_scope_session_session_seq
             ON run_events(scope_id,session_id,session_seq);
-        PRAGMA user_version={self.SCHEMA_VERSION};
+        PRAGMA user_version=4;
         COMMIT;
         """
         try:
@@ -617,7 +944,7 @@ class SqliteRuntimeStore:
     def _migrate_v3_to_v4(self) -> None:
         """Add logical storage identity and Session-level event ordering."""
 
-        migration_sql = f"""
+        migration_sql = """
         BEGIN IMMEDIATE;
         ALTER TABLE workspaces
             ADD COLUMN storage_root TEXT NOT NULL DEFAULT '';
@@ -664,7 +991,7 @@ class SqliteRuntimeStore:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_events_scope_session_session_seq
             ON run_events(scope_id,session_id,session_seq);
-        PRAGMA user_version={self.SCHEMA_VERSION};
+        PRAGMA user_version=4;
         COMMIT;
         """
         try:
@@ -733,17 +1060,39 @@ class SqliteRuntimeStore:
                     if workspace:
                         workspace_id = workspace["id"]
                         if (
+                            workspace["tenant_ref"] != binding.tenant_ref
+                            or workspace["user_ref"] != binding.user_ref
+                        ):
+                            raise DomainError(
+                                ErrorCode.IDEMPOTENCY_CONFLICT,
+                                "User project is already bound to a different identity",
+                            )
+                        if (
                             workspace["storage_ref"] != binding.project_path
                             or workspace["storage_root"] != binding.storage_root
-                            or workspace["tenant_ref"] != binding.tenant_ref
-                            or workspace["user_ref"] != binding.user_ref
                             or workspace["user_path"] != binding.user_path
                             or workspace["user_rel_path"] != binding.user_rel_path
                             or workspace["project_path"] != binding.project_path
                         ):
-                            raise DomainError(
-                                ErrorCode.IDEMPOTENCY_CONFLICT,
-                                "User project is already bound to different paths",
+                            conn.execute(
+                                """
+                                UPDATE workspaces
+                                SET storage_ref = ?, storage_root = ?, user_path = ?,
+                                    user_rel_path = ?, project_path = ?,
+                                    date_updated = ?, updated_by = ?
+                                WHERE scope_id = ? AND id = ?
+                                """,
+                                (
+                                    binding.project_path,
+                                    binding.storage_root,
+                                    binding.user_path,
+                                    binding.user_rel_path,
+                                    binding.project_path,
+                                    now,
+                                    actor,
+                                    scope_id,
+                                    workspace_id,
+                                ),
                             )
                     else:
                         workspace_id = str(uuid4())
@@ -1018,47 +1367,6 @@ class SqliteRuntimeStore:
         assert result is not None
         return result
 
-    def rebind_workspace_storage(
-        self,
-        session: dict[str, Any],
-        binding: UserBinding,
-        actor: str,
-    ) -> None:
-        """Explicitly move a Session's Workspace to a new stable storage root."""
-
-        if (
-            session["tenant_ref"] != binding.tenant_ref
-            or session["user_ref"] != binding.user_ref
-            or session["project_ref"] != binding.project_ref
-        ):
-            raise DomainError(
-                ErrorCode.IDEMPOTENCY_CONFLICT,
-                "Storage migration cannot change user or project identity",
-            )
-        now = _now()
-        with self._transaction() as conn:
-            updated = conn.execute(
-                """
-                UPDATE workspaces
-                SET storage_ref = ?, storage_root = ?, user_path = ?, user_rel_path = ?,
-                    project_path = ?, date_updated = ?, updated_by = ?
-                WHERE scope_id = ? AND id = ?
-                """,
-                (
-                    binding.project_path,
-                    binding.storage_root,
-                    binding.user_path,
-                    binding.user_rel_path,
-                    binding.project_path,
-                    now,
-                    actor,
-                    session["scope_id"],
-                    session["workspace_id"],
-                ),
-            ).rowcount
-            if updated != 1:
-                raise DomainError(ErrorCode.SESSION_NOT_FOUND, "Workspace not found")
-
     def find_request(
         self, scope_id: str, session_id: str, idempotency_key: str
     ) -> ExistingRequest | None:
@@ -1150,16 +1458,29 @@ class SqliteRuntimeStore:
                     )
             run_id = str(uuid4())
             run_seq = session["next_run_seq"]
+            base = self._content_base(session)
+            input_ref = self._write_message(
+                base, request.session_id, run_id, "user", request.input, run_seq
+            )
+            snapshot_ref = self._write_snapshot(
+                base,
+                request.session_id,
+                run_id,
+                json.dumps(asdict(snapshot), ensure_ascii=False, sort_keys=True),
+            )
             conn.execute(
                 """
                 INSERT INTO runs(
                     id,scope_id,session_id,workspace_id,run_seq,idempotency_key,request_fingerprint,
-                    input,agent_ref,execution_context,config_snapshot,status,
-                    active_attempt_id,state_version,task_outcome,wait_reason,output,error,
+                    input_ref,input_digest,input_chars,agent_ref,execution_context,
+                    config_snapshot_ref,config_snapshot_digest,config_snapshot_bytes,status,
+                    active_attempt_id,state_version,task_outcome,wait_reason,
+                    output_ref,output_digest,output_chars,error,
                     cancel_requested_at,deadline_at,due_at,next_event_seq,
                     date_created,created_by,date_updated,updated_by
                 ) VALUES (
-                    ?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,NULL,NULL,NULL,NULL,NULL,?,1,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,NULL,NULL,NULL,NULL,NULL,
+                    NULL,NULL,?,1,?,?,?,?
                 )
                 """,
                 (
@@ -1170,10 +1491,14 @@ class SqliteRuntimeStore:
                     run_seq,
                     idempotency_key,
                     fingerprint,
-                    request.input,
+                    input_ref.ref,
+                    input_ref.digest,
+                    len(request.input),
                     request.agent_ref,
                     json.dumps(asdict(request.context), ensure_ascii=False, sort_keys=True),
-                    json.dumps(asdict(snapshot), ensure_ascii=False, sort_keys=True),
+                    snapshot_ref.ref,
+                    snapshot_ref.digest,
+                    snapshot_ref.bytes,
                     RunStatus.QUEUED.value,
                     now,
                     now,
@@ -1187,7 +1512,14 @@ class SqliteRuntimeStore:
                 scope_id=request.context.scope_id,
                 run_id=run_id,
                 event_type=EventType.RUN_ACCEPTED,
-                data={"status": RunStatus.QUEUED.value, "snapshot": asdict(snapshot)},
+                data={
+                    "status": RunStatus.QUEUED.value,
+                    "snapshot_ref": {
+                        "ref": snapshot_ref.ref,
+                        "bytes": snapshot_ref.bytes,
+                        "digest": snapshot_ref.digest,
+                    },
+                },
                 actor=actor,
                 occurred_at=now,
             )
@@ -1240,10 +1572,7 @@ class SqliteRuntimeStore:
             ).fetchone()
         if not row:
             return None
-        data = dict(row)
-        data["execution_context"] = self._parse_json(data.get("execution_context"))
-        data["config_snapshot"] = self._parse_json(data.get("config_snapshot"))
-        data["error"] = self._parse_json(data.get("error"))
+        data = self._decode_run(dict(row))
         data["task_outcome"] = data.get("task_outcome")
         return data
 
@@ -1251,17 +1580,6 @@ class SqliteRuntimeStore:
         with self._lock:
             row = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return self._decode_run(dict(row)) if row else None
-
-    def get_tool_execution(self, operation_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            row = self.conn.execute(
-                "SELECT * FROM tool_executions WHERE id = ?", (operation_id,)
-            ).fetchone()
-        if not row:
-            return None
-        data = dict(row)
-        data["error"] = self._parse_json(data.get("error"))
-        return data
 
     def list_runs(
         self, scope_id: str, session_id: str, cursor: str | None, limit: int
@@ -1316,7 +1634,7 @@ class SqliteRuntimeStore:
         with self._lock:
             row = self.conn.execute(
                 """
-                SELECT p.id,p.run_id,p.kind,p.payload
+                SELECT p.id,p.run_id,p.kind,p.payload_ref
                 FROM pending_responses p
                 JOIN runs r
                   ON r.scope_id = p.scope_id AND r.id = p.run_id
@@ -1326,9 +1644,10 @@ class SqliteRuntimeStore:
                 """,
                 (session_id,),
             ).fetchone()
-        if not row:
-            return None
-        payload = self._parse_json(row["payload"]) or {}
+            if not row:
+                return None
+            base = self._base_for_session(session_id)
+            payload = self._read_object_json(base, row["payload_ref"]) or {}
         return {
             "pending_id": row["id"],
             "message_id": row["run_id"],
@@ -1352,7 +1671,7 @@ class SqliteRuntimeStore:
                 return []
             rows = self.conn.execute(
                 """
-                SELECT id,input,output,run_seq,status
+                SELECT id,input_ref,output_ref,run_seq,status
                 FROM runs
                 WHERE scope_id = ? AND session_id = ? AND run_seq < ?
                 ORDER BY run_seq DESC
@@ -1360,14 +1679,39 @@ class SqliteRuntimeStore:
                 """,
                 (scope_id, session_id, current["run_seq"], limit),
             ).fetchall()
-        history = [dict(row) for row in rows]
+            base = self._base_for_session(session_id)
+            history = [
+                {
+                    "id": row["id"],
+                    "run_seq": row["run_seq"],
+                    "status": row["status"],
+                    "input": self._read_message(base, row["input_ref"]),
+                    "output": self._read_message(base, row["output_ref"]),
+                }
+                for row in rows
+            ]
         history.reverse()
         return history
 
     def _decode_run(self, data: dict[str, Any]) -> dict[str, Any]:
         data["execution_context"] = self._parse_json(data.get("execution_context"))
-        data["config_snapshot"] = self._parse_json(data.get("config_snapshot"))
+        base = self._base_for_session(data["session_id"])
+        data["config_snapshot"] = self._read_object_json(base, data.get("config_snapshot_ref"))
+        data["input"] = self._read_message(base, data.get("input_ref"))
+        data["output"] = self._read_message(base, data.get("output_ref"))
         data["error"] = self._parse_json(data.get("error"))
+        for key in (
+            "input_ref",
+            "input_digest",
+            "input_chars",
+            "config_snapshot_ref",
+            "config_snapshot_digest",
+            "config_snapshot_bytes",
+            "output_ref",
+            "output_digest",
+            "output_chars",
+        ):
+            data.pop(key, None)
         return data
 
     def run_state(self, scope_id: str, run_id: str) -> RunState:
@@ -1667,11 +2011,20 @@ class SqliteRuntimeStore:
             if not changed.changed:
                 return self.get_run(scope_id, run_id)  # type: ignore[return-value]
             after = changed.after
+            output_ref = None
+            if output is not None:
+                base = self._base_for_session(row["session_id"], conn)
+                output_ref = self._write_message(
+                    base, row["session_id"], run_id, "assistant", output, int(row["run_seq"])
+                )
             conn.execute(
                 """
                 UPDATE runs
                 SET status = ?, state_version = ?, task_outcome = ?, wait_reason = ?,
-                    output = COALESCE(?, output), error = COALESCE(?, error),
+                    output_ref = COALESCE(?, output_ref),
+                    output_digest = COALESCE(?, output_digest),
+                    output_chars = COALESCE(?, output_chars),
+                    error = COALESCE(?, error),
                     date_updated = ?, updated_by = ?
                 WHERE scope_id = ? AND id = ? AND state_version = ?
                 """,
@@ -1680,7 +2033,9 @@ class SqliteRuntimeStore:
                     after.state_version,
                     after.task_outcome.value if after.task_outcome else None,
                     after.wait_reason,
-                    output,
+                    output_ref.ref if output_ref else None,
+                    output_ref.digest if output_ref else None,
+                    len(output) if output is not None else None,
                     json.dumps(error, ensure_ascii=False, sort_keys=True) if error else None,
                     now_iso,
                     actor,
@@ -1694,7 +2049,7 @@ class SqliteRuntimeStore:
                 data = {
                     "status": after.status.value,
                     "task_outcome": after.task_outcome.value if after.task_outcome else None,
-                    "output": output,
+                    "output_ref": output_ref.ref if output_ref else None,
                     "error": error,
                 }
             elif after.status in {RunStatus.WAITING_USER, RunStatus.WAITING_EXTERNAL}:
@@ -1828,7 +2183,8 @@ class SqliteRuntimeStore:
     ) -> dict[str, Any]:
         row = conn.execute(
             """
-            SELECT r.session_id,r.next_event_seq,s.next_event_seq AS session_next_event_seq
+            SELECT r.session_id,r.run_seq,r.next_event_seq,
+                   s.next_event_seq AS session_next_event_seq
             FROM runs r
             JOIN sessions s
               ON s.scope_id = r.scope_id AND s.id = r.session_id
@@ -1842,13 +2198,28 @@ class SqliteRuntimeStore:
         session_seq = int(row["session_next_event_seq"])
         event_id = str(uuid4())
         now = _now()
+        base = self._base_for_session(row["session_id"], conn)
+        record = {
+            "schema_version": "1",
+            "record_id": event_id,
+            "session_id": row["session_id"],
+            "run_id": run_id,
+            "run_seq": int(row["run_seq"]),
+            "session_seq": session_seq,
+            "kind": "event",
+            "type": event_type.value,
+            "occurred_at": occurred_at,
+            "actor_ref": actor,
+            "data": data,
+        }
+        content_ref = self._content.append_record(base, f"sessions/{row['session_id']}", record)
         conn.execute(
             """
             INSERT INTO run_events(
                 event_id,scope_id,run_id,session_id,seq,session_seq,
-                schema_version,type,data,occurred_at,
+                schema_version,type,data_ref,data_offset,data_bytes,data_digest,occurred_at,
                 date_created,created_by,date_updated,updated_by
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 event_id,
@@ -1859,7 +2230,10 @@ class SqliteRuntimeStore:
                 session_seq,
                 "1",
                 event_type.value,
-                json.dumps(data, ensure_ascii=False, sort_keys=True, default=_json_default),
+                content_ref.ref,
+                content_ref.offset,
+                content_ref.bytes,
+                content_ref.digest,
                 occurred_at,
                 now,
                 actor,
@@ -1889,24 +2263,56 @@ class SqliteRuntimeStore:
             "data": data,
         }
 
+    def _event_payload(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        base = self._base_for_session(row["session_id"])
+        try:
+            record = self._content.read_verified(
+                base,
+                row["data_ref"],
+                int(row["data_offset"]),
+                int(row["data_bytes"]),
+                row["data_digest"],
+            )
+        except ContentUnavailable as exc:
+            raise self._content_unavailable(exc) from exc
+        data = dict(record.get("data") or {})
+        output_ref = data.pop("output_ref", None)
+        if output_ref and data.get("output") is None:
+            data["output"] = self._read_message(base, output_ref)
+        return data
+
+    def _event_view(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = self._event_payload(row)
+        keys = {
+            "event_id",
+            "scope_id",
+            "run_id",
+            "session_id",
+            "seq",
+            "session_seq",
+            "schema_version",
+            "type",
+            "occurred_at",
+        }
+        item = {key: row[key] for key in row.keys() if key in keys}
+        item["data"] = payload
+        return item
+
     def list_events(
         self, scope_id: str, run_id: str, after_seq: int, limit: int
     ) -> tuple[list[dict[str, Any]], int | None]:
         with self._lock:
             rows = self.conn.execute(
                 """
-                SELECT event_id,scope_id,run_id,seq,schema_version,type,data,occurred_at
+                SELECT event_id,scope_id,run_id,session_id,seq,schema_version,type,
+                       data_ref,data_offset,data_bytes,data_digest,occurred_at
                 FROM run_events
                 WHERE scope_id = ? AND run_id = ? AND seq > ?
                 ORDER BY seq LIMIT ?
                 """,
                 (scope_id, run_id, after_seq, limit),
             ).fetchall()
-        events: list[dict[str, Any]] = []
-        for row in rows:
-            data = dict(row)
-            data["data"] = self._parse_json(data["data"])
-            events.append(data)
+            events = [self._event_view(row) for row in rows]
         next_after = events[-1]["seq"] if events else after_seq
         return events, next_after
 
@@ -1929,18 +2335,14 @@ class SqliteRuntimeStore:
             rows = self.conn.execute(
                 """
                 SELECT event_id,scope_id,run_id,session_id,seq,session_seq,
-                       schema_version,type,data,occurred_at
+                       schema_version,type,data_ref,data_offset,data_bytes,data_digest,occurred_at
                 FROM run_events
                 WHERE session_id = ? AND session_seq > ?
                 ORDER BY session_seq LIMIT ?
                 """,
                 (session_id, after_seq, limit),
             ).fetchall()
-        events: list[dict[str, Any]] = []
-        for row in rows:
-            data = dict(row)
-            data["data"] = self._parse_json(data["data"])
-            events.append(data)
+            events = [self._event_view(row) for row in rows]
         next_after = int(events[-1]["session_seq"]) if events else after_seq
         return events, next_after
 
@@ -1960,18 +2362,21 @@ class SqliteRuntimeStore:
         with self._lock:
             pending_rows = self.conn.execute(
                 """
-                SELECT id,kind,payload,response_key,response_digest,response_payload,resolved_at
+                SELECT id,kind,payload_ref,response_key,response_digest,
+                       response_payload_ref,resolved_at
                 FROM pending_responses WHERE scope_id = ? AND run_id = ? ORDER BY date_created
                 """,
                 (scope_id, run_id),
             ).fetchall()
-        pending = []
-        for row in pending_rows:
-            data = dict(row)
-            payload = self._parse_json(data.pop("payload")) or {}
-            data["prompt"] = payload.get("prompt", "")
-            data["resolved"] = data.get("resolved_at") is not None
-            pending.append(data)
+            base = self._base_for_session(run["session_id"])
+            pending = []
+            for row in pending_rows:
+                data = dict(row)
+                payload = self._read_object_json(base, data.pop("payload_ref")) or {}
+                data.pop("response_payload_ref", None)
+                data["prompt"] = payload.get("prompt", "")
+                data["resolved"] = data.get("resolved_at") is not None
+                pending.append(data)
         return {
             "run": run,
             "event_cursor": self.event_cursor(scope_id, run_id),
@@ -1991,6 +2396,7 @@ class SqliteRuntimeStore:
         actor: str,
         workspace_id: str | None = None,
         input_revision_id: str | None = None,
+        input_text: str = "",
     ) -> tuple[str, ToolStatus]:
         now = _now()
         with self._transaction() as conn:
@@ -2025,14 +2431,17 @@ class SqliteRuntimeStore:
                 raise DomainError(ErrorCode.STATE_CONFLICT, "Tool workspace mismatch")
             input_revision_id = input_revision_id or run["current_revision"]
             operation_id = str(uuid4())
+            input_digest = digest_text(input_text) if input_text else None
+            input_bytes = len(input_text.encode("utf-8")) if input_text else None
             conn.execute(
                 """
                 INSERT INTO tool_executions(
                     id,scope_id,run_id,workspace_id,logical_call_key,tool_ref,params_digest,input_ref,
+                    input_digest,input_bytes,
                     status,execution_profile_ref,external_operation_ref,process_ref,result_ref,
                     input_revision_id,result_revision_id,error,
                     date_created,created_by,date_updated,updated_by
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,NULL,NULL,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,NULL,NULL,?,?,?,?)
                 """,
                 (
                     operation_id,
@@ -2043,6 +2452,8 @@ class SqliteRuntimeStore:
                     tool_ref,
                     params_digest,
                     input_ref,
+                    input_digest,
+                    input_bytes,
                     ToolStatus.PREPARED.value,
                     execution_profile_ref,
                     input_revision_id,
@@ -2061,6 +2472,7 @@ class SqliteRuntimeStore:
                     "operation_id": operation_id,
                     "tool_ref": tool_ref,
                     "input_summary": input_summary,
+                    "input": input_text,
                 },
                 actor=actor,
                 occurred_at=now,
@@ -2171,7 +2583,6 @@ class SqliteRuntimeStore:
                 data.update(
                     {
                         "status": status.value,
-                        "result_ref": result_ref,
                         "error": error,
                     }
                 )
@@ -2199,9 +2610,10 @@ class SqliteRuntimeStore:
         with self._transaction() as conn:
             pending = conn.execute(
                 """
-                SELECT id,response_key,response_digest,resolved_at
-                FROM pending_responses
-                WHERE scope_id = ? AND run_id = ? AND id = ?
+                SELECT p.id,p.response_key,p.response_digest,p.resolved_at,r.session_id
+                FROM pending_responses p
+                JOIN runs r ON r.scope_id = p.scope_id AND r.id = p.run_id
+                WHERE p.scope_id = ? AND p.run_id = ? AND p.id = ?
                 """,
                 (scope_id, run_id, pending_id),
             ).fetchone()
@@ -2211,17 +2623,27 @@ class SqliteRuntimeStore:
                 if pending["response_key"] == response_key and pending["response_digest"] == digest:
                     return self.get_run(scope_id, run_id)  # type: ignore[return-value]
                 raise DomainError(ErrorCode.STATE_CONFLICT, "Response is already resolved")
+            base = self._base_for_session(pending["session_id"], conn)
+            response_ref = self._write_object(
+                base,
+                f"sessions/{pending['session_id']}/pending/{pending_id}-response.json",
+                json.dumps({"text": text}, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+            )
             conn.execute(
                 """
                 UPDATE pending_responses
-                SET response_key = ?, response_digest = ?, response_payload = ?,
+                SET response_key = ?, response_digest = ?,
+                    response_payload_ref = ?, response_payload_digest = ?,
+                    response_payload_bytes = ?,
                     resolved_at = ?, date_updated = ?, updated_by = ?
                 WHERE scope_id = ? AND run_id = ? AND id = ?
                 """,
                 (
                     response_key,
                     digest,
-                    json.dumps({"text": text}, ensure_ascii=False, sort_keys=True),
+                    response_ref.ref,
+                    response_ref.digest,
+                    response_ref.bytes,
                     _now(),
                     _now(),
                     actor,
@@ -2289,11 +2711,29 @@ class SqliteRuntimeStore:
         if not changed.changed:
             return
         after = changed.after
+        output_ref = None
+        if output is not None:
+            session_row = conn.execute(
+                "SELECT session_id,run_seq FROM runs WHERE scope_id = ? AND id = ?",
+                (scope_id, run_id),
+            ).fetchone()
+            base = self._base_for_session(session_row["session_id"], conn)
+            output_ref = self._write_message(
+                base,
+                session_row["session_id"],
+                run_id,
+                "assistant",
+                output,
+                int(session_row["run_seq"]),
+            )
         conn.execute(
             """
             UPDATE runs
             SET status = ?, state_version = ?, task_outcome = ?, wait_reason = ?,
-                output = COALESCE(?, output), error = COALESCE(?, error),
+                output_ref = COALESCE(?, output_ref),
+                output_digest = COALESCE(?, output_digest),
+                output_chars = COALESCE(?, output_chars),
+                error = COALESCE(?, error),
                 date_updated = ?, updated_by = ?
             WHERE scope_id = ? AND id = ? AND state_version = ?
             """,
@@ -2302,7 +2742,9 @@ class SqliteRuntimeStore:
                 after.state_version,
                 after.task_outcome.value if after.task_outcome else None,
                 after.wait_reason,
-                output,
+                output_ref.ref if output_ref else None,
+                output_ref.digest if output_ref else None,
+                len(output) if output is not None else None,
                 json.dumps(error, ensure_ascii=False, sort_keys=True) if error else None,
                 _now(),
                 actor,

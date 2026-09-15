@@ -686,6 +686,10 @@
       }
       if (data.tool_ref) state.item.querySelector(".trace-name").textContent = data.tool_ref;
       if (data.input_summary) state.summary.textContent = data.input_summary;
+      if (data.input) {
+        state.code.hidden = false;
+        state.code.textContent = data.input;
+      }
       return state;
     }
 
@@ -765,7 +769,6 @@
         state.stderr.hidden = false;
         state.stderr.textContent = data.error.message;
       }
-      refreshToolCard(data.operation_id, true);
     }
 
     function handleTraceEvent(event) {
@@ -781,7 +784,6 @@
         if (state) {
           setBadge(state.status, "RUNNING", "");
           state.item.className = "trace-item tool running";
-          refreshToolCard(event.data.operation_id, false);
         }
       } else if (event.type === "tool.output") {
         appendToolOutput(event);
@@ -790,35 +792,6 @@
       } else if (event.type === "workspace.committed") {
         addWorkspaceChip(event);
       }
-    }
-
-    async function refreshToolCard(operationId, includeLogs) {
-      if (!currentSession || !operationId) return;
-      let detail;
-      try {
-        detail = await api(
-          `/v1/get-tool-execution?session_id=${encodeURIComponent(currentSession.session_id)}&operation_id=${encodeURIComponent(operationId)}`
-        );
-      } catch (error) {
-        return;
-      }
-      const state = toolCards.get(operationId);
-      if (!state) return;
-      if (detail.input) {
-        state.code.hidden = false;
-        state.code.textContent = detail.input;
-      }
-      if (includeLogs) {
-        if (detail.stdout) {
-          state.stdout.hidden = false;
-          state.stdout.textContent = detail.stdout;
-        }
-        if (detail.stderr) {
-          state.stderr.hidden = false;
-          state.stderr.textContent = detail.stderr;
-        }
-      }
-      if (detail.status) setBadge(state.status, detail.status, toolStatusMode(detail.status));
     }
 
     async function loadSessionTrace() {
@@ -834,9 +807,6 @@
       for (const event of page.items) {
         if (TRACE_EVENT_TYPES.has(event.type)) handleTraceEvent(event);
       }
-      await Promise.all(
-        [...toolCards.keys()].map((operationId) => refreshToolCard(operationId, true))
-      );
       for (const trace of document.querySelectorAll(".trace")) {
         if (!trace.childElementCount) trace.remove();
       }

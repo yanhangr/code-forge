@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from code_forge.contracts import (
@@ -14,6 +15,36 @@ from code_forge.contracts import (
     UserBinding,
     WorkspaceCommit,
 )
+
+
+def active_skill_names(run: Mapping[str, Any]) -> tuple[str, ...]:
+    """Names frozen in the Run snapshot; never read Skill sources at run time."""
+
+    return tuple(
+        item["name"]
+        for item in run.get("config_snapshot", {}).get("skills", [])
+        if item.get("name")
+    )
+
+
+def select_active_skill(
+    run: Mapping[str, Any],
+    requested: Any,
+) -> tuple[str | None, str | None]:
+    """Map a model-requested Skill onto the frozen candidates.
+
+    Returns ``(skill_name, error)``. When no Skill is active the requested name is
+    ignored so a tool call cannot masquerade as an unconfigured Skill.
+    """
+
+    names = active_skill_names(run)
+    if not names:
+        return "", None
+    if isinstance(requested, str) and requested in names:
+        return requested, None
+    return None, (
+        f"Skill '{requested}' is not active for this Run. Active skills: {', '.join(names)}"
+    )
 
 
 def build_operation_spec(

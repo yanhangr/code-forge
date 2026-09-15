@@ -6,12 +6,10 @@ import asyncio
 import threading
 from dataclasses import asdict
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from code_forge.contracts import (
     DomainError,
-    ErrorCode,
     ExecutionContext,
     RunRequest,
     SkillBinding,
@@ -242,75 +240,6 @@ class AgentRuntime:
 
     def get_run(self, scope_id: str, run_id: str) -> dict[str, Any] | None:
         return self.store.get_run(scope_id, run_id)
-
-    def get_tool_execution(
-        self,
-        session_id: str,
-        operation_id: str,
-        *,
-        limit: int = 65536,
-    ) -> dict[str, Any]:
-        execution = self.store.get_tool_execution(operation_id)
-        if execution is None:
-            raise DomainError(ErrorCode.RUN_NOT_FOUND, "Tool execution not found")
-        run = self.store.get_run(execution["scope_id"], execution["run_id"])
-        if run is None or run["session_id"] != session_id:
-            raise DomainError(ErrorCode.RUN_NOT_FOUND, "Tool execution not found")
-        session = self.store.get_session_unscoped(session_id)
-        binding = self._binding_from_session(session) if session else None
-        directory = self._tool_operation_dir(execution, binding, session_id)
-        input_text, input_truncated = self._read_bounded_text(directory, "input.txt", limit)
-        stdout_text, stdout_truncated = self._read_bounded_text(directory, "stdout.log", limit)
-        stderr_text, stderr_truncated = self._read_bounded_text(directory, "stderr.log", limit)
-        return {
-            "operation_id": execution["id"],
-            "message_id": execution["run_id"],
-            "tool_ref": execution["tool_ref"],
-            "status": execution["status"],
-            "input": input_text or None,
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-            "truncated": input_truncated or stdout_truncated or stderr_truncated,
-            "error": execution.get("error"),
-        }
-
-    @staticmethod
-    def _tool_operation_dir(
-        execution: dict[str, Any],
-        binding: UserBinding | None,
-        session_id: str,
-    ) -> Path | None:
-        result_ref = execution.get("result_ref")
-        if result_ref:
-            return Path(str(result_ref)).parent
-        if binding is not None:
-            return (
-                Path(binding.user_path)
-                / "tool-output"
-                / session_id
-                / str(execution["run_id"])
-                / str(execution["id"])
-            )
-        return None
-
-    @staticmethod
-    def _read_bounded_text(
-        directory: Path | None,
-        name: str,
-        limit: int,
-    ) -> tuple[str, bool]:
-        if directory is None:
-            return "", False
-        path = directory / name
-        if not path.is_file():
-            return "", False
-        try:
-            with path.open("rb") as handle:
-                data = handle.read(limit + 1)
-        except OSError:
-            return "", False
-        truncated = len(data) > limit
-        return data[:limit].decode("utf-8", errors="replace"), truncated
 
     def respond_to_run(
         self,

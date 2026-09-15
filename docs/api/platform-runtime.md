@@ -39,7 +39,7 @@
 | 级别 | 接口 | 说明 |
 | --- | --- | --- |
 | 核心写 | `create-session`、`update-session`、`send-message`、`cancel-message`、`reply` | 主流程；发送和回复直接返回 SSE，终止返回当前 Message 状态。 |
-| 核心读 | `get-session-state`、`get-message`、`get-tool-execution` | 状态查询与工具/Skill 轨迹展示。 |
+| 核心读 | `get-session-state`、`get-message` | 状态查询。 |
 | 断线恢复 | `stream-session-events` | 只用于页面刷新或网络重连。 |
 | 历史恢复 | `get-session`、`list-sessions`、`list-session-messages`、`list-session-events` | 刷新、翻页和补偿。 |
 | 诊断 | `health`、`list-session-files`、`read-session-file` | 不作为主链路依赖。 |
@@ -125,10 +125,13 @@ user_root = /mnt/nas/T001/users/U001
 
 - 它是稳定的逻辑挂载点，例如始终使用 `/mnt/nas`。
 - NAS 设备迁移时，优先把新存储挂载到同一个 `storage_root`，逻辑身份不变。
-- Runtime 内部以规范化后的 `storage_root + user_rel_path + project identity` 作为
-  Workspace 身份。
-- 如果 Platform 改变 `storage_root` 字符串，则会被识别为新的 Workspace；此时必须显式
-  同步 Session 绑定，不能静默复用旧身份。
+- Runtime 内部以 `scope_id/project_ref` 定位 Workspace，`storage_root/user_path/project_path`
+  是该 Workspace 的绝对路径绑定。
+- `storage_root` 只在 `create-session` 由 Platform 提供并写入绑定；创建后所有流程只凭
+  `session_id` 读取该绑定，不再需要传 `storage_root`。
+- 同一用户 Project 再次 `create-session` 时，Runtime 以本次传入的路径为准刷新绑定；
+  历史数据迁移（含已有文件的根路径调整）由 Platform 侧 DML 负责，Runtime 不提供接口
+  改路径。
 
 默认目录：
 
@@ -148,30 +151,17 @@ default_skills = <user_root>/config/skills
 
 ### 3.2 NAS 迁移
 
-迁移前：
+推荐通过重新挂载保持相同 `storage_root`，逻辑身份不变。
 
-```json
-{
-  "storage_root": "/mnt/nas-old",
-  "user_rel_path": "T001/users/U001"
-}
-```
+如果必须修改根路径：
 
-迁移后：
-
-```json
-{
-  "storage_root": "/mnt/nas-new",
-  "user_rel_path": "T001/users/U001"
-}
-```
-
-规则：
-
-- 推荐通过重新挂载保持相同 `storage_root`。
-- 如果必须修改根路径，需要显式迁移已有 Session/Workspace 绑定。
+- 已有数据（`workspaces.storage_root/user_path/project_path` 及文件本体）由 Platform 侧
+  DML 迁移，Runtime 不提供改路径接口。
+- 迁移后的新会话直接在新根上 `create-session`，Runtime 以传入路径刷新绑定。
 - 已开始的 Message 使用接受时冻结的解析路径。
-- 新 Message 使用新的 `storage_root`。
+
+后续 `send-message`、`list-session-files`、`read-session-file` 不接受 `storage_root`，
+只从 `session_id` 绑定的根解析路径。
 
 ### 3.3 Skill 路径
 
@@ -421,7 +411,8 @@ Runtime 会发现 `analysis` 和 `report` 两个 Skill 包，忽略 `helper`。
 | `input` | string，1-100000 | 是 | 用户输入原文。 |
 | `agent_ref` | string | 否 | Agent 配置引用。 |
 | `skill_paths` | string[] 或 null | 否 | Skill 包目录或一层 Skill 根目录。 |
-| `storage_root` | absolute string 或 null | 否 | 当前 NAS 根；用于迁移场景。 |
+
+路径来自 `session_id` 已绑定的 `storage_root`，请求不再接受 `storage_root`。
 
 执行语义：
 
@@ -644,47 +635,6 @@ data: {"code":"0000","message":"success","data":{"event_id":"55555555-5555-4555-
 终止请求幂等：已经处于 `CANCELLING` 或终态的 Message 返回当前状态，不重复写入审计
 或事件。终止不会撤销已经提交的文件，也不会撤回已经发生的远端副作用。
 
-### 5.11 `GET /v1/get-tool-execution`
-
-作用：读取一次工具执行的输入与受限输出，用于 Platform 展示可读的工具/Skill 轨迹。
-Platform 从 `tool.prepared`/`tool.started`/`tool.finished` 事件取得 `operation_id`，
-再用本接口补齐实际执行的代码、stdout 和 stderr。
-
-查询参数：
-
-| 参数 | 类型 | 必填 | 含义 |
-| --- | --- | --- | --- |
-| `session_id` | UUID | 是 | 该操作所属 Session；用于校验归属。 |
-| `operation_id` | UUID | 是 | 工具执行 ID。 |
-
-返回示例：
-
-```json
-{
-  "code": "0000",
-  "message": "success",
-  "data": {
-    "operation_id": "66666666-6666-4666-8666-666666666666",
-    "message_id": "22222222-2222-4222-8222-222222222222",
-    "tool_ref": "python",
-    "status": "SUCCEEDED",
-    "input": "print(2 + 3)\n",
-    "stdout": "5\n",
-    "stderr": "",
-    "truncated": false,
-    "error": null
-  }
-}
-```
-
-规则：
-
-- `input` 是实际通过 stdin 交给子进程的原始代码或命令；受大小上限约束，超限时
-  `truncated` 为 `true`。
-- `stdout`/`stderr` 从操作目录读取，可能比 `tool.output` 事件更完整；事件仍用于实时展示。
-- 归属或 `operation_id` 不匹配时返回消息不存在（404），不暴露其他 Session 的工具信息。
-- 本接口是只读诊断接口，不改变任何 Message 或工具状态。
-
 ## 6. 事件接口
 
 ### 6.1 `GET /v1/stream-session-events`
@@ -728,10 +678,10 @@ data: {"code":"0000","message":"success","data":{"event_id":"44444444-4444-4444-
 | `message.finished` | Message 终态。 |
 | `message.delta` | 模型文本增量。 |
 | `message.completed` | 完整模型回复。 |
-| `tool.prepared` | 工具意图已记录。 |
+| `tool.prepared` | 工具意图已记录，`data.input` 携带实际代码或命令。 |
 | `tool.started` | 工具开始。 |
-| `tool.output` | 工具输出。 |
-| `tool.finished` | 工具结束。 |
+| `tool.output` | 工具输出分片，执行过程中持续产生；`data.stream` 区分 stdout/stderr。 |
+| `tool.finished` | 工具结束，携带状态与错误；不再暴露主机文件路径。 |
 | `tool.unknown` | 工具结果未知。 |
 | `skill.activated` | Skill 已加载。 |
 | `skill.started` | Skill 操作开始。 |
@@ -804,7 +754,6 @@ data: {"code":"0000","message":"success","data":{"event_id":"44444444-4444-4444-
 | 参数 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
 | `session_id` | UUID | 是 | Session ID。 |
-| `storage_root` | absolute string | 否 | 迁移后的当前 NAS 根。 |
 
 返回示例：
 
@@ -832,7 +781,6 @@ data: {"code":"0000","message":"success","data":{"event_id":"44444444-4444-4444-
 | 参数 | 类型 | 必填 | 含义 |
 | --- | --- | --- | --- |
 | `session_id` | UUID | 是 | Session ID。 |
-| `storage_root` | absolute string | 否 | 迁移后的当前 NAS 根。 |
 | `path` | relative string | 是 | 项目内相对路径。 |
 
 返回示例：

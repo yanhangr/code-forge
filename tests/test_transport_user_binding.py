@@ -182,7 +182,17 @@ class PlatformApiTransportTests(unittest.TestCase):
         message_id = events[0]["envelope"]["data"]["message_id"]
 
         prepared = next(item for item in events if item["event"] == "tool.prepared")
-        operation_id = prepared["envelope"]["data"]["data"]["operation_id"]
+        self.assertEqual(prepared["envelope"]["data"]["data"]["tool_ref"], "python")
+        self.assertEqual(prepared["envelope"]["data"]["data"]["input"], "print(2 + 3)\n")
+        outputs = [item for item in events if item["event"] == "tool.output"]
+        self.assertTrue(outputs)
+        self.assertEqual(
+            "".join(item["envelope"]["data"]["data"]["text"] for item in outputs),
+            "5\n",
+        )
+        finished = next(item for item in events if item["event"] == "tool.finished")
+        self.assertEqual(finished["envelope"]["data"]["data"]["status"], "SUCCEEDED")
+        self.assertNotIn("result_ref", json.dumps(events))
 
         transcript = session_storage / "transcript-000001.jsonl"
         for _ in range(50):
@@ -210,20 +220,6 @@ class PlatformApiTransportTests(unittest.TestCase):
         self.assertEqual(message["data"]["status"], "SUCCEEDED")
         self.assertEqual(message["data"]["task_outcome"], "completed")
         self.assertEqual(message["data"]["output"], "5")
-
-        _, execution = self.request(
-            "GET",
-            f"/v1/get-tool-execution?session_id={session['session_id']}"
-            f"&operation_id={operation_id}",
-            expected_status=200,
-        )
-        assert isinstance(execution, dict)
-        self.assertEqual(execution["data"]["operation_id"], operation_id)
-        self.assertEqual(execution["data"]["message_id"], message_id)
-        self.assertEqual(execution["data"]["tool_ref"], "python")
-        self.assertEqual(execution["data"]["status"], "SUCCEEDED")
-        self.assertEqual(execution["data"]["input"], "print(2 + 3)\n")
-        self.assertEqual(execution["data"]["stdout"], "5\n")
 
         _, state = self.request(
             "GET",
@@ -253,6 +249,79 @@ class PlatformApiTransportTests(unittest.TestCase):
         assert isinstance(replay, dict)
         self.assertEqual(replay["data"]["items"][0]["type"], "message.accepted")
         self.assertEqual(replay["data"]["next_after_seq"], sequence[-1])
+
+    def test_create_session_rebinds_workspace_when_storage_root_changes(self):
+        _, created = self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": self.storage_root.as_posix(),
+                "user_rel_path": "T001/users/U001",
+                "project_ref": "P001",
+            },
+            expected_status=201,
+        )
+        assert isinstance(created, dict)
+        first = created["data"]
+
+        migrated_root = Path(self.temp.name) / "nas-new"
+        _, migrated = self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": migrated_root.as_posix(),
+                "user_rel_path": "T001/users/U001",
+                "project_ref": "P001",
+            },
+            expected_status=201,
+        )
+        assert isinstance(migrated, dict)
+        second = migrated["data"]
+        self.assertNotEqual(second["session_id"], first["session_id"])
+        self.assertEqual(second["project_rel_path"], "workspace/projects/P001")
+
+        rebound = self.server.runtime.store.get_session_unscoped(first["session_id"])
+        second_row = self.server.runtime.store.get_session_unscoped(second["session_id"])
+        assert rebound is not None and second_row is not None
+        self.assertEqual(rebound["workspace_id"], second_row["workspace_id"])
+        self.assertEqual(rebound["storage_root"], migrated_root.resolve().as_posix())
+        self.assertEqual(
+            rebound["project_path"],
+            (migrated_root / "T001/users/U001/workspace/projects/P001").resolve().as_posix(),
+        )
+        self.assertTrue(
+            (migrated_root / "T001/users/U001/sessions" / second["session_id"]).is_dir()
+        )
+
+    def test_create_session_rejects_changed_user_identity(self):
+        self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": self.storage_root.as_posix(),
+                "user_rel_path": "T001/users/U001",
+                "project_ref": "P001",
+            },
+            expected_status=201,
+        )
+        workspace_id = self.server.runtime.store.list_bound_sessions()[0]["workspace_id"]
+        with self.server.runtime.store._transaction() as conn:
+            conn.execute(
+                "UPDATE workspaces SET user_ref = 'u-tampered' WHERE id = ?",
+                (workspace_id,),
+            )
+        status, payload = self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": self.storage_root.as_posix(),
+                "user_rel_path": "T001/users/U001",
+                "project_ref": "P001",
+            },
+        )
+        self.assertEqual(status, 409)
+        assert isinstance(payload, dict)
+        self.assertEqual(payload["code"], "1004")
 
     def test_busy_session_returns_business_code_1005(self):
         _, created = self.request(

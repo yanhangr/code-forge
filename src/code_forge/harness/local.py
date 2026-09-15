@@ -24,7 +24,11 @@ from code_forge.contracts import (
     ToolStatus,
 )
 from code_forge.execution.local_process_backend import LocalProcessBackend
-from code_forge.harness.tooling import build_operation_spec, persist_workspace_commit
+from code_forge.harness.tooling import (
+    build_operation_spec,
+    persist_workspace_commit,
+    select_active_skill,
+)
 from code_forge.persistence.sqlite_store import SqliteRuntimeStore
 from code_forge.workspace.store import WorkspaceStore
 
@@ -96,6 +100,7 @@ class LocalDeterministicHarness:
                 input_summary=f"{tool_ref} block {index}",
                 actor=actor,
                 workspace_id=workspace_id,
+                input_text=code,
             )
             self.store.start_tool(scope_id, operation_id, actor)
             spec = build_operation_spec(
@@ -113,9 +118,11 @@ class LocalDeterministicHarness:
                 output_limit_bytes=256 * 1024,
                 environment_profile_ref="local@1",
             )
-            await self.execution.submit(spec)
+            await self.execution.submit(
+                spec,
+                on_output=self._output_sink(scope_id, operation_id, actor),
+            )
             result = await self._wait_for_operation(operation_id)
-            self._emit_tool_logs(scope_id, operation_id, result, actor)
             tool_status = result.status
             tool_error = None
             result_revision_id = None
@@ -256,7 +263,12 @@ class LocalDeterministicHarness:
                     arguments = json.loads(function.get("arguments") or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                if tool_name == "execute_python":
+                skill_name, skill_error = select_active_skill(run, arguments.get("skill"))
+                if skill_error is not None:
+                    status = ToolStatus.FAILED
+                    stdout_text = ""
+                    stderr_text = skill_error
+                elif tool_name == "execute_python":
                     code = arguments.get("code", "")
                     status, stdout_text, stderr_text = await self._execute_model_code_tool(
                         run,
@@ -267,7 +279,7 @@ class LocalDeterministicHarness:
                         working_directory,
                         "python",
                         code,
-                        arguments.get("skill") or "analysis-report",
+                        skill_name or "",
                         actor,
                     )
                 elif tool_name == "execute_command":
@@ -281,7 +293,7 @@ class LocalDeterministicHarness:
                         working_directory,
                         "command",
                         command,
-                        arguments.get("skill") or "analysis-report",
+                        skill_name or "",
                         actor,
                     )
                 else:
@@ -318,9 +330,14 @@ class LocalDeterministicHarness:
                         "type": "object",
                         "properties": {
                             "code": {"type": "string"},
-                            "skill": {"type": "string"},
+                            "skill": {
+                                "type": "string",
+                                "description": (
+                                    "Name of an active Skill. Omit when no Skill is active."
+                                ),
+                            },
                         },
-                        "required": ["code", "skill"],
+                        "required": ["code"],
                     },
                 },
             },
@@ -333,9 +350,14 @@ class LocalDeterministicHarness:
                         "type": "object",
                         "properties": {
                             "command": {"type": "string"},
-                            "skill": {"type": "string"},
+                            "skill": {
+                                "type": "string",
+                                "description": (
+                                    "Name of an active Skill. Omit when no Skill is active."
+                                ),
+                            },
                         },
-                        "required": ["command", "skill"],
+                        "required": ["command"],
                     },
                 },
             },
@@ -380,19 +402,21 @@ class LocalDeterministicHarness:
             input_summary=f"model {tool_ref} call",
             actor=actor,
             workspace_id=workspace_id,
+            input_text=code,
         )
         self.store.start_tool(run["scope_id"], operation_id, actor)
-        self.store.append_event(
-            run["scope_id"],
-            run["id"],
-            EventType.SKILL_STARTED,
-            {
-                "name": skill_name,
-                "version": self._skill_version(run, skill_name),
-                "operation_id": operation_id,
-            },
-            actor,
-        )
+        if skill_name:
+            self.store.append_event(
+                run["scope_id"],
+                run["id"],
+                EventType.SKILL_STARTED,
+                {
+                    "name": skill_name,
+                    "version": self._skill_version(run, skill_name),
+                    "operation_id": operation_id,
+                },
+                actor,
+            )
         spec = build_operation_spec(
             operation_id=operation_id,
             run_id=run["id"],
@@ -408,9 +432,11 @@ class LocalDeterministicHarness:
             output_limit_bytes=256 * 1024,
             environment_profile_ref="local@1",
         )
-        await self.execution.submit(spec)
+        await self.execution.submit(
+            spec,
+            on_output=self._output_sink(run["scope_id"], operation_id, actor),
+        )
         result = await self._wait_for_operation(operation_id)
-        self._emit_tool_logs(run["scope_id"], operation_id, result, actor)
         tool_status = result.status
         tool_error = None
         result_revision_id = None
@@ -460,18 +486,19 @@ class LocalDeterministicHarness:
             if tool_status in {ToolStatus.SUCCEEDED, ToolStatus.FAILED, ToolStatus.CANCELLED}
             else ToolStatus.FAILED.value
         )
-        self.store.append_event(
-            run["scope_id"],
-            run["id"],
-            EventType.SKILL_FINISHED,
-            {
-                "name": skill_name,
-                "version": self._skill_version(run, skill_name),
-                "operation_id": operation_id,
-                "status": skill_finished_status,
-            },
-            actor,
-        )
+        if skill_name:
+            self.store.append_event(
+                run["scope_id"],
+                run["id"],
+                EventType.SKILL_FINISHED,
+                {
+                    "name": skill_name,
+                    "version": self._skill_version(run, skill_name),
+                    "operation_id": operation_id,
+                    "status": skill_finished_status,
+                },
+                actor,
+            )
         return (
             tool_status,
             self._read_log(result.stdout_ref).strip(),
@@ -506,7 +533,7 @@ class LocalDeterministicHarness:
             "你是 Code Forge 的 Agent。你可以调用 execute_python 或 execute_command，"
             "用真实执行结果继续工作。需要计算、读文件、修改文件或生成文件时，"
             "优先用 execute_python；需要运行 shell 命令时用 execute_command。"
-            "每个工具调用必须通过 skill 字段声明当前执行的是哪个 Skill。"
+            "有活动 Skill 时，工具调用的 skill 字段只能选择活动 Skill；没有活动 Skill 时省略该字段。"
             "不要声称未执行的结果已经验证。"
         )
         if not skill_context:
@@ -535,19 +562,20 @@ class LocalDeterministicHarness:
                 return result
             await asyncio.sleep(0.05)
 
-    def _emit_tool_logs(self, scope_id: str, operation_id: str, result: Any, actor: str) -> None:
-        for stream, ref in (("stdout", result.stdout_ref), ("stderr", result.stderr_ref)):
-            text = self._read_log(ref)
-            if not text:
-                continue
+    def _output_sink(self, scope_id: str, operation_id: str, actor: str) -> Any:
+        def sink(stream: str, text: str, truncated: bool) -> None:
+            if not text and not truncated:
+                return
             self.store.append_tool_output(
                 scope_id,
                 operation_id,
                 stream,
-                text[:8192],
-                len(text) > 8192,
+                text,
+                truncated,
                 actor,
             )
+
+        return sink
 
     @staticmethod
     def _read_log(ref: str | None) -> str:

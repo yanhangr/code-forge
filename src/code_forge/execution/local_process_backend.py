@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import os
 import signal
 import uuid
@@ -19,7 +20,7 @@ from code_forge.contracts import (
     ToolStatus,
     WorkspaceCommit,
 )
-from code_forge.ports import ExecutionBackend
+from code_forge.ports import ExecutionBackend, OutputSink
 from code_forge.workspace.store import WorkspaceStore
 
 _SAFE_ENV_KEYS = (
@@ -69,6 +70,7 @@ class _RunningOperation:
     stderr_truncated: bool = False
     task: asyncio.Task[Any] | None = None
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    output_sink: OutputSink | None = None
 
 
 class LocalProcessBackend(ExecutionBackend):
@@ -84,7 +86,12 @@ class LocalProcessBackend(ExecutionBackend):
     async def capabilities(self) -> frozenset[str]:
         return frozenset({"python", "command"})
 
-    async def submit(self, spec: OperationSpec) -> str:
+    async def submit(
+        self,
+        spec: OperationSpec,
+        *,
+        on_output: OutputSink | None = None,
+    ) -> str:
         async with self._lock:
             existing = self._operations.get(spec.operation_id)
             if existing:
@@ -147,6 +154,7 @@ class LocalProcessBackend(ExecutionBackend):
                 process=process,
                 stdout_ref=str(stdout_path),
                 stderr_ref=str(stderr_path),
+                output_sink=on_output,
             )
             self._operations[spec.operation_id] = operation
             operation.task = asyncio.create_task(self._run_operation(operation))
@@ -185,6 +193,8 @@ class LocalProcessBackend(ExecutionBackend):
                 operation.process.stdout,
                 stdout_path,
                 operation.spec.output_limit_bytes,
+                "stdout",
+                operation.output_sink,
             )
         )
         stderr_task = asyncio.create_task(
@@ -192,6 +202,8 @@ class LocalProcessBackend(ExecutionBackend):
                 operation.process.stderr,
                 stderr_path,
                 operation.spec.output_limit_bytes,
+                "stderr",
+                operation.output_sink,
             )
         )
         stdin_task = None
@@ -268,11 +280,15 @@ class LocalProcessBackend(ExecutionBackend):
         stream: asyncio.StreamReader | None,
         path: Path,
         limit: int,
+        name: str = "stdout",
+        sink: OutputSink | None = None,
     ) -> bool:
         if stream is None:
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         truncated = False
+        notified = False
         total = 0
         with path.open("wb") as handle:
             while True:
@@ -282,12 +298,27 @@ class LocalProcessBackend(ExecutionBackend):
                 remaining = limit - total
                 if remaining <= 0:
                     truncated = True
+                    if sink is not None and not notified:
+                        sink(name, "", True)
+                        notified = True
                     continue
                 write_size = min(len(chunk), remaining)
                 handle.write(chunk[:write_size])
                 total += write_size
                 if write_size < len(chunk):
                     truncated = True
+                    if sink is not None and not notified:
+                        sink(name, decoder.decode(chunk[:write_size], final=False), True)
+                        notified = True
+                    continue
+                if sink is not None:
+                    text = decoder.decode(chunk[:write_size], final=False)
+                    if text:
+                        sink(name, text, False)
+        if sink is not None and not truncated:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                sink(name, tail, False)
         return truncated
 
     @staticmethod

@@ -138,11 +138,7 @@ def _binding_from_payload(
     )
 
 
-def _binding_from_session(
-    session: Mapping[str, Any],
-    *,
-    storage_root: Any = None,
-) -> UserBinding | None:
+def _binding_from_session(session: Mapping[str, Any]) -> UserBinding | None:
     if not session.get("project_path") or not session.get("user_path"):
         return None
     project_path = Path(str(session["project_path"]))
@@ -153,11 +149,7 @@ def _binding_from_session(
         return None
     internal_project_ref = str(session.get("project_ref") or "")
     public_project_ref = None if internal_project_ref.startswith("__") else internal_project_ref
-    root = (
-        _absolute_path(storage_root, "storage_root")
-        if storage_root not in (None, "")
-        else str(session.get("storage_root") or "")
-    )
+    root = str(session.get("storage_root") or "")
     if not root:
         return None
     return _binding_from_payload(
@@ -197,7 +189,6 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "/v1/list-sessions": lambda: self._list_sessions(query),
                 "/v1/get-session-state": lambda: self._get_session_state(query),
                 "/v1/get-message": lambda: self._get_message(query),
-                "/v1/get-tool-execution": lambda: self._get_tool_execution(query),
                 "/v1/list-session-messages": lambda: self._list_session_messages(query),
                 "/v1/stream-session-events": lambda: self._stream_session_events(query),
                 "/v1/list-session-events": lambda: self._list_session_events(query),
@@ -336,25 +327,6 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             raise DomainError(ErrorCode.RUN_NOT_FOUND, "Message not found")
         self._ok(self._message_view(message))
 
-    def _get_tool_execution(self, query: dict[str, list[str]]) -> None:
-        session = self._require_session(query)
-        operation_id = self._required_query(query, "operation_id")
-        detail = self.server.runtime.get_tool_execution(session["id"], operation_id)
-        self._ok(self._tool_execution_view(detail))
-
-    def _tool_execution_view(self, detail: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "operation_id": detail["operation_id"],
-            "message_id": detail["message_id"],
-            "tool_ref": detail["tool_ref"],
-            "status": detail["status"],
-            "input": detail["input"],
-            "stdout": detail["stdout"],
-            "stderr": detail["stderr"],
-            "truncated": detail["truncated"],
-            "error": self._public_error(detail.get("error"), detail["message_id"]),
-        }
-
     def _list_session_messages(self, query: dict[str, list[str]]) -> None:
         session = self._require_session(query)
         limit = self._int_query(query, "limit", 50, 100)
@@ -376,15 +348,9 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         input_text = self._required_string(body, "input")
         if not 1 <= len(input_text) <= 100_000:
             raise DomainError(ErrorCode.INVALID_REQUEST, "input must be 1-100000 characters")
-        binding = _binding_from_session(session, storage_root=body.get("storage_root"))
+        binding = _binding_from_session(session)
         if binding is None:
             raise DomainError(ErrorCode.STATE_CONFLICT, "Session has no managed workspace")
-        if binding.storage_root != session.get("storage_root"):
-            self.server.runtime.store.rebind_workspace_storage(
-                session,
-                binding,
-                "system:runtime/api",
-            )
         skill_paths = self._skill_paths(body.get("skill_paths"), binding)
         before = self.server.runtime.store.session_event_cursor(session["id"])
         context = ExecutionContext(
@@ -472,10 +438,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
     def _list_session_files(self, query: dict[str, list[str]]) -> None:
         session = self._require_session(query)
-        binding = _binding_from_session(
-            session,
-            storage_root=self._query_value(query, "storage_root"),
-        )
+        binding = _binding_from_session(session)
         if binding is None:
             raise DomainError(ErrorCode.STATE_CONFLICT, "Session has no managed workspace")
         files = self.server.runtime.workspace.list_files(session["workspace_id"], binding)
@@ -492,10 +455,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
     def _read_session_file(self, query: dict[str, list[str]]) -> None:
         session = self._require_session(query)
         relative_path = _relative_path(self._required_query(query, "path"), "path")
-        binding = _binding_from_session(
-            session,
-            storage_root=self._query_value(query, "storage_root"),
-        )
+        binding = _binding_from_session(session)
         if binding is None:
             raise DomainError(ErrorCode.STATE_CONFLICT, "Session has no managed workspace")
         text, digest, truncated = self.server.runtime.workspace.read_text(

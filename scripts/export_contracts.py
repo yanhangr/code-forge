@@ -155,7 +155,6 @@ schemas = {
             "skill_paths": nullable(
                 {**array(string(minLength=1)), "maxItems": 30, "default": None}
             ),
-            "storage_root": nullable(string(minLength=1)),
         },
         ["session_id", "input"],
     ),
@@ -356,30 +355,6 @@ schemas = {
         },
         ["path", "content", "digest", "truncated"],
     ),
-    "ToolExecution": obj(
-        {
-            "operation_id": uuid,
-            "message_id": uuid,
-            "tool_ref": string(),
-            "status": ref("ToolStatus"),
-            "input": nullable(string()),
-            "stdout": string(),
-            "stderr": string(),
-            "truncated": {"type": "boolean"},
-            "error": nullable(ref("Error")),
-        },
-        [
-            "operation_id",
-            "message_id",
-            "tool_ref",
-            "status",
-            "input",
-            "stdout",
-            "stderr",
-            "truncated",
-            "error",
-        ],
-    ),
     "Health": obj(
         {
             "status": string(enum=["ok", "degraded"]),
@@ -462,8 +437,13 @@ event_payloads = {
     "message.delta": obj({"text": string()}, ["text"]),
     "message.completed": obj({"text": string()}, ["text"]),
     "tool.prepared": obj(
-        {"operation_id": uuid, "tool_ref": string(), "input_summary": string()},
-        ["operation_id", "tool_ref", "input_summary"],
+        {
+            "operation_id": uuid,
+            "tool_ref": string(),
+            "input_summary": string(),
+            "input": string(),
+        },
+        ["operation_id", "tool_ref", "input_summary", "input"],
     ),
     "tool.started": obj({"operation_id": uuid, "tool_ref": string()}, ["operation_id", "tool_ref"]),
     "tool.output": obj(
@@ -479,10 +459,9 @@ event_payloads = {
         {
             "operation_id": uuid,
             "status": string(enum=["SUCCEEDED", "FAILED", "CANCELLED"]),
-            "result_ref": nullable(string()),
             "error": nullable(ref("Error")),
         },
-        ["operation_id", "status", "result_ref", "error"],
+        ["operation_id", "status", "error"],
     ),
     "tool.unknown": obj({"operation_id": uuid, "reason": string()}, ["operation_id", "reason"]),
     "skill.activated": obj(
@@ -566,7 +545,6 @@ for name, data in [
     ("EventPageEnvelope", ref("EventPage")),
     ("FilePageEnvelope", ref("FilePage")),
     ("FileContentEnvelope", ref("FileContent")),
-    ("ToolExecutionEnvelope", ref("ToolExecution")),
 ]:
     schemas[name] = envelope(data)
 
@@ -699,14 +677,6 @@ add(
     required_query=("message_id",),
 )
 add(
-    "/v1/get-tool-execution",
-    "get",
-    "getToolExecution",
-    "ToolExecutionEnvelope",
-    query=(("session_id", uuid), ("operation_id", uuid)),
-    required_query=("session_id", "operation_id"),
-)
-add(
     "/v1/list-session-messages",
     "get",
     "listSessionMessages",
@@ -744,7 +714,7 @@ add(
     "get",
     "listSessionFiles",
     "FilePageEnvelope",
-    query=(("session_id", uuid), ("storage_root", string())),
+    query=(("session_id", uuid),),
     required_query=("session_id",),
 )
 add(
@@ -754,7 +724,6 @@ add(
     "FileContentEnvelope",
     query=(
         ("session_id", uuid),
-        ("storage_root", string()),
         ("path", string(minLength=1, maxLength=1000)),
     ),
     required_query=("session_id", "path"),

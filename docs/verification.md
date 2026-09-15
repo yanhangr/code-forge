@@ -4,9 +4,9 @@
 
 | 验证 | 结果 | 能力边界 |
 | --- | --- | --- |
-| 核心、适配与迁移测试 | 59 项通过 | 状态不变量、幂等、UserBinding、Session/Message 原子忙碌拒绝、公开 Message 终止与幂等、用户默认/显式多 Skill 路径、Workspace lease/revision、子进程 stdin/环境白名单/超时诊断、工具执行输入/输出读取、SQLite v1→v4 迁移 |
+| 核心、适配与迁移测试 | 66 项通过 | 状态不变量、幂等、UserBinding、Session/Message 原子忙碌拒绝、公开 Message 终止与幂等、用户默认/显式多 Skill 路径、Skill 冻结候选约束、Workspace lease/revision、create-session 路径绑定刷新、子进程 stdin/环境白名单/超时诊断、工具输入与输出分片事件、SQLite v1→v4 迁移 |
 | PostgreSQL 语法解析 | pglast 8.4 解析 197 条语句通过 | 没有在 PostgreSQL 实例执行，不证明迁移/FK/真实并发运行通过 |
-| JSON Schema | 生成 70 个组件 schema，一致性检查通过 | 不等于所有生产客户端已完成兼容验证 |
+| JSON Schema | 生成 68 个组件 schema，一致性检查通过 | 不等于所有生产客户端已完成兼容验证 |
 | 接口文档示例 | Session、Message、动作型请求和公开事件通过 schema 验证 | 不代表发起过真实网络请求 |
 | 流程分支与测试规格 | B01—B48均有TC-Bxx定义 | 48个完整集成用例均为SPEC_ONLY，未冒充通过 |
 | SQL审计/备注/索引结构 | 10表、156字段注释及四个审计字段；6个显式普通/唯一索引，无条件/表达式索引 | 唯一执行权的真实PG并发验证仍待实施 |
