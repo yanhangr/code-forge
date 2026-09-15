@@ -231,7 +231,7 @@ def build_plugins(
         env.get("FORGE_AUTHORIZATION", "default-allow"),
         env=env,
     )
-    skills_root = Path(env.get("FORGE_SKILLS_DIR", root / "skills"))
+    skills_root = Path(env.get("FORGE_SKILLS_DIR", root / "config" / "skills"))
     if not skills_root.is_absolute():
         skills_root = root / skills_root
     resolver = registry.create(

@@ -23,7 +23,6 @@ def main() -> None:
     load_dotenv(repo_root)
     sys.path.insert(0, str(repo_root / "src"))
     os.environ.setdefault("FORGE_RUNTIME_DIR", args.runtime_dir)
-    os.environ.setdefault("FORGE_SKILLS_DIR", str(repo_root / "skills"))
 
     from code_forge.transport.server import create_server
 

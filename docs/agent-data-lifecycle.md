@@ -17,13 +17,15 @@
 | 载体 | 默认位置 | 当前保存的内容 | 是否可作为恢复事实 |
 | --- | --- | --- | --- |
 | SQLite 运行库 | `FORGE_RUNTIME_DIR/state.db`，默认 `.runtime/state.db` | Session、Message 到 Run 的映射、Attempt、工具账本、Session 级事件、配置快照、幂等键 | 是，当前进程重启后仍可读取 |
+| Session 文件 | `<user_root>/sessions/<session_id>/` | `session.json` 逻辑绑定元数据和 `transcript-*.jsonl` 对话记录 | 是；SQLite 仍是权威状态，文件是用户根目录投影 |
+| Tool Output | `<user_root>/tool-output/<session_id>/<run_id>/<operation_id>/` | 操作 stdin 输入、受限 stdout/stderr 日志与操作引用 | 是，绑定模式；legacy 仍使用 `.runtime/operations/` |
 | Skill 快照 | 绑定模式为 `.runtime/skill-snapshots/<scope-digest>/<digest>/`；legacy 为 `.runtime/skill-snapshots/<digest>/` | 接受 Run 时固定下来的完整 Skill 包 | 是，已接受 Run 从快照读取，不读源目录 |
 | Workspace 与操作文件 | 绑定模式使用 UserBinding `project_path` 和 `.forge/`；legacy 使用 `.runtime/workspace-store/`；日志在 `.runtime/operations/` | 当前文件、修订副本、manifest、完整受限日志 | 是，文件先保存；修订随后与数据库 CAS 关联 |
 | Python/LangGraph 内存 | Worker 线程、`MemorySaver`、进程对象 | 当前图状态、消息列表、工具调用中间态、子进程句柄 | 否，Runtime 重启后丢失 |
 
 最重要的时序结论：
 
-- `POST /v1/create-session` 返回前，Workspace、Session、路径绑定和内部创建记录已经写入 SQLite。
+- `POST /v1/create-session` 返回前，Workspace、Session、路径绑定和内部创建记录已经写入 SQLite；绑定模式下同时建立 `sessions/<session_id>/`、`config/`、`tool-output/`、`snapshots/` 用户目录。
 - 每个 Skill 包在 Run 接受事务之前就已经复制到不可变快照目录；接受事务只保存引用、版本和 digest。
 - `POST /v1/send-message` 返回首个 SSE 事件前，Message 对应的 Run 输入、配置快照、`QUEUED` 状态和首事件已经提交。
 - Worker 领取 Message 时，Attempt、epoch、租约、`RUNNING` 状态和开始事件已经提交。
@@ -90,6 +92,7 @@ flowchart LR
 - `runs`：`workspace_id`、`input`、`agent_ref`、`execution_context`、完整 `config_snapshot`、`run_seq`、请求指纹、`QUEUED`、`state_version=0`、`next_event_seq=1` 和审计字段。
 - `run_events`：内部 `run.accepted`，公开投影为 `message.accepted`；同时分配 Session 级 `session_seq`。
 - `sessions.next_run_seq/next_event_seq`：分别增加 1，并更新 Session 审计字段。
+- `sessions/<session_id>/transcript-000001.jsonl`：写入 `user` 记录；Run 正常结束后补写对应的 `assistant` 结果记录。
 
 事务提交后 `send-message` 建立 SSE 并先发送 `message.accepted`。网络超时不承诺 exactly-once，Platform 先查询 Session 状态再决定后续动作。
 
@@ -145,16 +148,15 @@ LangGraph 图当前使用进程内 `MemorySaver`，且 `thread_id=attempt_id`。
 
 一次 Python/命令工具调用按以下顺序发生：
 
-1. Harness 把模型生成的代码写入当前执行根，例如 `model_<uuid>.py` 或 `model_<uuid>.sh`；绑定模式就是 UserBinding `project_path`，legacy 是 Attempt 目录。
+1. Harness 在内存中取得模型生成的 Python 或 shell 代码。
 2. `prepare_tool` 事务写 `tool_executions(PREPARED)` 和 `tool.prepared`。
 3. `start_tool` 事务把工具改为 `RUNNING` 并写 `tool.started`。
 4. Harness 写 `skill.started`。
-5. `LocalProcessBackend.submit` 创建 `operations/<operation_id>/`，启动本机子进程。
-6. stdout/stderr 持续写入 `operations/<operation_id>/stdout.log` 和 `stderr.log`。
+5. `LocalProcessBackend.submit` 在绑定模式创建 `<user_root>/tool-output/<session_id>/<run_id>/<operation_id>/`，legacy 模式继续使用 `operations/<operation_id>/`。
+6. `input.txt` 先原子保存原始 stdin；Python 使用 `python3 -`、shell 使用 `/bin/bash -s` 从 stdin 执行，不把过程脚本写进 Workspace。
+7. stdout/stderr 持续写入该操作目录下的 `stdout.log` 和 `stderr.log`；超时诊断也写入 `stderr.log`。
 
 `tool_executions` 保存 `workspace_id`、`logical_call_key`、`tool_ref`、参数 digest、`input_ref`、`input_revision_id`、`result_revision_id`、执行 profile、状态和结果引用。`input_ref` 仍是本地引用字符串，不是集中存储的操作输入对象。
-
-工具启动前已经持久化意图，但生成脚本文件早于 `tool.prepared` 写入 Attempt 目录；这是当前实现与“先落操作意图，再准备输入”目标之间的一个顺序差异。
 
 ### S07 工作区提交
 
@@ -239,8 +241,11 @@ SSE 的事件不是独立通道：所有 `tool.*`、`message.*`、`skill.*`、`w
 | `.runtime/state.db` | Runtime 启动和业务写入 | 全部运行事实与事件 | API、Worker、恢复和上下文组装 |
 | `skill-snapshots/<scope-digest>/<digest>/` | Run 接受前解析 Skill | SKILL.md 和全部支持文件 | Run 激活 Skill 时 |
 | UserBinding `project_path` | Session 创建、工具执行 | 当前用户 Project 正式文件及 `.forge` 元数据 | 文件 API、下一轮 Run |
+| `<user_root>/sessions/<session_id>/` | Session 创建或启动回填 | `session.json` 和 JSONL transcript | 会话恢复、审计和用户目录检查 |
+| `<user_root>/tool-output/<session_id>/<run_id>/` | 工具执行 | 每次操作的 stdin、stdout/stderr 与引用 | Harness、诊断 |
 | `<project_path>/.forge/revisions/<revision_id>/` | 工具成功提交后 | 该次提交的完整文件副本 | 恢复和审计 |
 | `.runtime/workspace-store/current/<workspace_id>/` | legacy Session 创建、工具成功提交 | 旧模式当前正式文件及 manifest | 兼容测试 |
+| `.runtime/operations/<operation_id>/input.txt` | 子进程启动前 | Python/命令的原始 stdin | Harness、诊断 |
 | `.runtime/operations/<operation_id>/stdout.log` | 子进程运行时 | 有界 stdout | Harness 读取、`result_ref` 指向 |
 | `.runtime/operations/<operation_id>/stderr.log` | 子进程运行时 | 有界 stderr | Harness 读取和错误摘要 |
 
@@ -274,11 +279,11 @@ Skill 源目录 `skills/` 是编辑源，不是已接受 Run 的运行源。Run 
 3. `artifacts` 尚未形成真实写入链；Workspace revision 已接入 SQLite 和事件链。
 4. `tool_executions.input_ref` 目前只是字符串引用，`process_ref`、`external_operation_ref`、`checkpoint_ref` 未写入。
 5. `tool.output` 在工具结束后批量落库，不是实时同步每个日志分片。
-6. 工具脚本先写入执行根，再写 `tool.prepared`，输入准备与操作意图还没有完全按目标顺序解耦。
-7. `pending_responses` 有读写接口，但没有创建待决项的流程，澄清恢复尚未闭环。
-8. 运行中取消不会调用底层进程取消，也没有独立的取消收尾协程。
-9. Workspace lease/epoch 已阻止旧 Attempt 发布修订，但没有心跳续约、租约超时扫描和自动接管。
-10. legacy 与 UserBinding 项目路径同时存在；生产 PostgreSQL 必须先执行真实迁移和并发验证。
+6. `pending_responses` 有读写接口，但没有创建待决项的流程，澄清恢复尚未闭环。
+7. 运行中取消不会调用底层进程取消，也没有独立的取消收尾协程。
+8. Workspace lease/epoch 已阻止旧 Attempt 发布修订，但没有心跳续约、租约超时扫描和自动接管。
+9. legacy 与 UserBinding 项目路径同时存在；生产 PostgreSQL 必须先执行真实迁移和并发验证。
+10. User Root 已创建 `snapshots/` 目录，但每个 Run 的执行前快照及其 PostgreSQL 元数据表尚未落地；当前文件恢复事实仍由 `workspace_revisions` 承担。
 
 ## 8. 恢复时各事实从哪里取
 

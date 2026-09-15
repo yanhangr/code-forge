@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Code Forge Runtime Integration Contract",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Architecture contract; endpoints are not implemented yet. Trusted local verification uses default permissions and local subprocess execution."
   },
   "servers": [
@@ -496,6 +496,84 @@
         }
       }
     },
+    "/v1/cancel-message": {
+      "post": {
+        "operationId": "cancelMessage",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelMessage"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/get-session-state": {
       "get": {
         "operationId": "getSessionState",
@@ -595,6 +673,93 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/get-tool-execution": {
+      "get": {
+        "operationId": "getToolExecution",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolExecutionEnvelope"
                 }
               }
             }
@@ -1222,8 +1387,10 @@
           "WAITING_USER",
           "WAITING_EXTERNAL",
           "RECOVERING",
+          "CANCELLING",
           "SUCCEEDED",
           "FAILED",
+          "CANCELLED",
           "TIMED_OUT"
         ]
       },
@@ -1277,6 +1444,7 @@
           "message.waiting",
           "message.resumed",
           "message.recovering",
+          "message.cancel_requested",
           "message.finished",
           "message.delta",
           "message.completed",
@@ -2094,6 +2262,9 @@
             "$ref": "#/components/schemas/Event_message_recovering"
           },
           {
+            "$ref": "#/components/schemas/Event_message_cancel_requested"
+          },
+          {
             "$ref": "#/components/schemas/Event_message_finished"
           },
           {
@@ -2138,6 +2309,7 @@
             "message.waiting": "#/components/schemas/Event_message_waiting",
             "message.resumed": "#/components/schemas/Event_message_resumed",
             "message.recovering": "#/components/schemas/Event_message_recovering",
+            "message.cancel_requested": "#/components/schemas/Event_message_cancel_requested",
             "message.finished": "#/components/schemas/Event_message_finished",
             "message.delta": "#/components/schemas/Event_message_delta",
             "message.completed": "#/components/schemas/Event_message_completed",
@@ -2206,6 +2378,19 @@
           "message_id",
           "pending_id",
           "text"
+        ]
+      },
+      "CancelMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "message_id"
         ]
       },
       "SessionState": {
@@ -2326,6 +2511,66 @@
           "content",
           "digest",
           "truncated"
+        ]
+      },
+      "ToolExecution": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tool_ref": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolStatus"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "operation_id",
+          "message_id",
+          "tool_ref",
+          "status",
+          "input",
+          "stdout",
+          "stderr",
+          "truncated",
+          "error"
         ]
       },
       "Health": {
@@ -2709,6 +2954,67 @@
             "required": [
               "message_id",
               "reason"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "session_id",
+          "message_id",
+          "seq",
+          "type",
+          "occurred_at",
+          "data"
+        ]
+      },
+      "Event_message_cancel_requested": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "message.cancel_requested"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CANCELLING"
+                ]
+              }
+            },
+            "required": [
+              "message_id",
+              "status"
             ]
           }
         },
@@ -3916,6 +4222,32 @@
           },
           "data": {
             "$ref": "#/components/schemas/FileContent"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ]
+      },
+      "ToolExecutionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "0000"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "enum": [
+              "success"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/ToolExecution"
           }
         },
         "required": [

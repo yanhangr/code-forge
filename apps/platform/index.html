@@ -37,6 +37,8 @@
     button:hover { border-color: #aeb8c2; }
     button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
     button.primary:hover { background: #125687; }
+    button.danger { color: var(--red); border-color: #e8b9b5; }
+    button.danger:hover { border-color: var(--red); }
     button:disabled { cursor: not-allowed; opacity: 0.55; }
     input, textarea {
       width: 100%;
@@ -128,6 +130,17 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .session-title-input {
+      min-width: 180px;
+      flex: 1;
+      border-color: transparent;
+      background: transparent;
+      font-weight: 650;
+    }
+    .session-title-input:focus {
+      border-color: var(--blue);
+      background: #fff;
+    }
     .messages {
       min-height: 0;
       overflow: auto;
@@ -187,6 +200,70 @@
       overflow-wrap: anywhere;
       color: #3c4854;
       font-size: 12px;
+    }
+    .trace {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: min(760px, 92%);
+      margin: 0 0 12px;
+    }
+    .trace:empty { display: none; }
+    .trace-item {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-left: 3px solid #c3ccd5;
+      border-radius: 6px;
+      background: #fff;
+      font-size: 13px;
+    }
+    .trace-item.running { border-left-color: var(--blue); }
+    .trace-item.ok { border-left-color: var(--green); }
+    .trace-item.err { border-left-color: var(--red); }
+    .trace-item.skill { background: #f3f7fb; }
+    .trace-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .trace-kind {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .trace-name { font-weight: 650; }
+    .trace-summary { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .trace-item pre {
+      margin: 6px 0 0;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: #f4f6f8;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+      max-height: 260px;
+      overflow: auto;
+    }
+    .trace-item pre.trace-code { background: #f0f4f8; }
+    .trace-item pre.trace-stderr { background: #fdf0ef; color: #7a271a; }
+    .trace-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      align-self: flex-start;
+      padding: 4px 8px;
+      border: 1px solid #cfe0ee;
+      border-radius: 999px;
+      background: #eef6fc;
+      color: #255d86;
+      font-size: 12px;
+    }
+    .trace-chip.workspace {
+      border-color: #d6e5d9;
+      background: #eef7f0;
+      color: var(--green);
     }
     .empty { color: var(--muted); padding: 12px; }
     .badge {
@@ -250,8 +327,9 @@
     <section class="panel main">
       <div class="session-bar">
         <button id="create-session" class="primary" type="button">新建会话</button>
-        <button id="rename-session" type="button">重命名</button>
-        <div id="session-title" class="status-line">未选择会话</div>
+        <input id="session-title" class="session-title-input" placeholder="未选择会话" disabled>
+        <button id="rename-session" type="button" disabled>保存名称</button>
+        <button id="cancel-message" class="danger" type="button" disabled>终止</button>
       </div>
       <div id="reply-panel" class="reply">
         <div id="reply-prompt" class="reply-prompt"></div>
@@ -283,16 +361,23 @@
     const $ = (id) => document.getElementById(id);
     const EVENT_TYPES = [
       "message.accepted", "message.started", "message.waiting", "message.resumed",
-      "message.recovering", "message.finished", "message.delta", "message.completed",
+      "message.recovering", "message.cancel_requested", "message.finished",
+      "message.delta", "message.completed",
       "tool.prepared", "tool.started", "tool.output", "tool.finished", "tool.unknown",
       "skill.activated", "skill.started", "skill.finished", "workspace.committed"
     ];
+    const TRACE_EVENT_TYPES = new Set([
+      "tool.prepared", "tool.started", "tool.output", "tool.finished", "tool.unknown",
+      "skill.activated", "skill.started", "skill.finished", "workspace.committed"
+    ]);
     let currentSession = null;
     let currentMessageId = null;
     let currentPending = null;
     let eventCursor = 0;
     let reconnectSource = null;
     let sending = false;
+    const toolCards = new Map();
+    const skillCards = new Map();
 
     function baseUrl() {
       return $("runtime-url").value.trim().replace(/\/$/, "");
@@ -359,8 +444,11 @@
 
     async function renameSession() {
       if (!currentSession) return;
-      const title = prompt("会话标题", currentSession.title);
-      if (!title) return;
+      const title = $("session-title").value.trim();
+      if (!title) {
+        setBadge($("message-status"), "会话名称不能为空", "err");
+        return;
+      }
       try {
         const session = await api("/v1/update-session", {
           method: "POST",
@@ -368,7 +456,7 @@
           body: JSON.stringify({session_id: currentSession.session_id, title})
         });
         currentSession = session;
-        $("session-title").textContent = session.title;
+        $("session-title").value = session.title;
         await loadSessions();
       } catch (error) {
         setBadge($("message-status"), error.message, "err");
@@ -378,7 +466,10 @@
     async function loadSessions() {
       const container = $("session-list");
       try {
-        const page = await api("/v1/list-sessions?limit=100");
+        const params = new URLSearchParams({limit: "100"});
+        const userRelPath = $("user-rel-path").value.trim();
+        if (userRelPath) params.set("user_rel_path", userRelPath);
+        const page = await api(`/v1/list-sessions?${params.toString()}`);
         container.textContent = "";
         if (!page.items.length) {
           container.innerHTML = '<div class="empty">暂无会话</div>';
@@ -414,7 +505,12 @@
         currentMessageId = null;
         currentPending = null;
         eventCursor = 0;
-        $("session-title").textContent = `${session.title} · ${session.session_id}`;
+        toolCards.clear();
+        skillCards.clear();
+        $("cancel-message").disabled = true;
+        $("session-title").value = session.title;
+        $("session-title").disabled = false;
+        $("rename-session").disabled = false;
         $("messages").textContent = "";
         $("event-list").innerHTML = '<div class="empty">等待事件</div>';
         hideReply();
@@ -436,9 +532,11 @@
       );
       for (const message of page.items) {
         appendMessage("user", message.input, `user-${message.message_id}`);
+        traceContainerFor(message.message_id);
         if (message.output) appendMessage("assistant", message.output, message.message_id);
         currentMessageId = message.message_id;
       }
+      await loadSessionTrace();
     }
 
     function appendMessage(role, text, key) {
@@ -451,20 +549,63 @@
         if (key) item.dataset.message = key;
         container.append(item);
       }
-      item.textContent = text;
+      if (text) item.textContent = text;
       container.scrollTop = container.scrollHeight;
       return item;
     }
 
+    const typingStates = new Map();
+
     function appendDelta(messageId, text) {
-      const item = appendMessage("assistant", "", messageId);
-      item.classList.add("pending");
-      item.textContent += text;
+      let state = typingStates.get(messageId);
+      if (!state) {
+        state = {
+          item: appendMessage("assistant", "", messageId),
+          queue: "",
+          finalText: null,
+          running: false,
+        };
+        typingStates.set(messageId, state);
+      }
+      state.queue += text;
+      state.item.classList.add("pending");
+      if (!state.running) typeNextCharacter(messageId);
     }
 
     function completeMessage(messageId, text) {
-      const item = appendMessage("assistant", text, messageId);
-      item.classList.remove("pending");
+      let state = typingStates.get(messageId);
+      if (!state) {
+        const item = appendMessage("assistant", text, messageId);
+        item.classList.remove("pending");
+        return;
+      }
+      state.finalText = text;
+      if (!state.running) {
+        state.item.textContent = text;
+        state.item.classList.remove("pending");
+        typingStates.delete(messageId);
+      }
+    }
+
+    function typeNextCharacter(messageId) {
+      const state = typingStates.get(messageId);
+      if (!state) return;
+      if (!state.queue.length) {
+        state.running = false;
+        if (state.finalText !== null) {
+          state.item.textContent = state.finalText;
+          state.item.classList.remove("pending");
+          typingStates.delete(messageId);
+        }
+        return;
+      }
+      state.running = true;
+      const character = state.queue[0];
+      state.queue = state.queue.slice(1);
+      state.item.textContent += character;
+      const container = $("messages");
+      container.scrollTop = container.scrollHeight;
+      setTimeout(() => typeNextCharacter(messageId), 18);
     }
 
     function appendEvent(payload) {
@@ -481,6 +622,224 @@
       item.append(type, body);
       container.prepend(item);
       eventCursor = Math.max(eventCursor, event.seq);
+    }
+
+    function traceContainerFor(messageId) {
+      const container = $("messages");
+      if (container.querySelector(".empty")) container.textContent = "";
+      const key = CSS.escape(messageId);
+      let trace = container.querySelector(`[data-trace="${key}"]`);
+      if (!trace) {
+        trace = document.createElement("div");
+        trace.className = "trace";
+        trace.dataset.trace = messageId;
+        const assistant = container.querySelector(`[data-message="${key}"]`);
+        if (assistant) container.insertBefore(trace, assistant);
+        else container.append(trace);
+      }
+      container.scrollTop = container.scrollHeight;
+      return trace;
+    }
+
+    function toolStatusMode(status) {
+      if (status === "SUCCEEDED") return "ok";
+      if (["FAILED", "CANCELLED", "UNKNOWN"].includes(status)) return "err";
+      if (status === "PREPARED") return "wait";
+      return "";
+    }
+
+    function upsertToolCard(event) {
+      const data = event.data || {};
+      const operationId = data.operation_id;
+      if (!operationId) return null;
+      let state = toolCards.get(operationId);
+      if (!state) {
+        const trace = traceContainerFor(event.message_id);
+        const item = document.createElement("div");
+        item.className = "trace-item tool";
+        const head = document.createElement("div");
+        head.className = "trace-head";
+        const kind = document.createElement("span");
+        kind.className = "trace-kind";
+        kind.textContent = "工具执行";
+        const name = document.createElement("span");
+        name.className = "trace-name";
+        name.textContent = data.tool_ref || "tool";
+        const status = document.createElement("span");
+        status.className = "badge";
+        head.append(kind, name, status);
+        const summary = document.createElement("div");
+        summary.className = "trace-summary";
+        const code = document.createElement("pre");
+        code.className = "trace-code";
+        code.hidden = true;
+        const stdout = document.createElement("pre");
+        stdout.className = "trace-stdout";
+        stdout.hidden = true;
+        const stderr = document.createElement("pre");
+        stderr.className = "trace-stderr";
+        stderr.hidden = true;
+        item.append(head, summary, code, stdout, stderr);
+        trace.append(item);
+        state = {item, status, summary, code, stdout, stderr};
+        toolCards.set(operationId, state);
+      }
+      if (data.tool_ref) state.item.querySelector(".trace-name").textContent = data.tool_ref;
+      if (data.input_summary) state.summary.textContent = data.input_summary;
+      return state;
+    }
+
+    function addSkillChip(event) {
+      const data = event.data || {};
+      const trace = traceContainerFor(event.message_id);
+      const chip = document.createElement("div");
+      chip.className = "trace-chip";
+      chip.textContent = `已加载 Skill ${data.name || ""}@${data.version || ""}`;
+      trace.append(chip);
+    }
+
+    function updateSkillCard(event) {
+      const data = event.data || {};
+      const key = `skill:${data.operation_id || data.name}`;
+      let state = skillCards.get(key);
+      if (!state) {
+        const trace = traceContainerFor(event.message_id);
+        const item = document.createElement("div");
+        item.className = "trace-item skill running";
+        const head = document.createElement("div");
+        head.className = "trace-head";
+        const kind = document.createElement("span");
+        kind.className = "trace-kind";
+        kind.textContent = "Skill 执行";
+        const name = document.createElement("span");
+        name.className = "trace-name";
+        name.textContent = `${data.name || ""}@${data.version || ""}`;
+        const status = document.createElement("span");
+        status.className = "badge wait";
+        status.textContent = "RUNNING";
+        head.append(kind, name, status);
+        item.append(head);
+        trace.append(item);
+        state = {item, status};
+        skillCards.set(key, state);
+      }
+      if (event.type === "skill.finished") {
+        const status = data.status || "FAILED";
+        const mode = toolStatusMode(status);
+        setBadge(state.status, status, mode);
+        state.item.className = `trace-item skill ${mode === "ok" ? "ok" : "err"}`;
+      }
+    }
+
+    function addWorkspaceChip(event) {
+      const data = event.data || {};
+      const trace = traceContainerFor(event.message_id);
+      const chip = document.createElement("div");
+      chip.className = "trace-chip workspace";
+      const paths = Array.isArray(data.changed_paths) ? data.changed_paths : [];
+      const suffix = paths.length ? ` · ${paths.join(", ")}` : "";
+      chip.textContent = `文件修订 ${data.revision_id || ""}${suffix}`;
+      trace.append(chip);
+    }
+
+    function appendToolOutput(event) {
+      const state = upsertToolCard(event);
+      if (!state) return;
+      const data = event.data || {};
+      const target = data.stream === "stderr" ? state.stderr : state.stdout;
+      target.hidden = false;
+      target.textContent += data.text || "";
+      const container = $("messages");
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function finishToolCard(event) {
+      const state = upsertToolCard(event);
+      if (!state) return;
+      const data = event.data || {};
+      const status = event.type === "tool.unknown" ? "UNKNOWN" : data.status || "FAILED";
+      const mode = toolStatusMode(status);
+      setBadge(state.status, status, mode);
+      state.item.className = `trace-item tool ${mode}`.trim();
+      if (data.error && data.error.message && !state.stderr.textContent) {
+        state.stderr.hidden = false;
+        state.stderr.textContent = data.error.message;
+      }
+      refreshToolCard(data.operation_id, true);
+    }
+
+    function handleTraceEvent(event) {
+      if (event.type === "skill.activated") {
+        addSkillChip(event);
+      } else if (event.type === "skill.started" || event.type === "skill.finished") {
+        updateSkillCard(event);
+      } else if (event.type === "tool.prepared") {
+        const state = upsertToolCard(event);
+        if (state) setBadge(state.status, "PREPARED", "wait");
+      } else if (event.type === "tool.started") {
+        const state = upsertToolCard(event);
+        if (state) {
+          setBadge(state.status, "RUNNING", "");
+          state.item.className = "trace-item tool running";
+          refreshToolCard(event.data.operation_id, false);
+        }
+      } else if (event.type === "tool.output") {
+        appendToolOutput(event);
+      } else if (event.type === "tool.finished" || event.type === "tool.unknown") {
+        finishToolCard(event);
+      } else if (event.type === "workspace.committed") {
+        addWorkspaceChip(event);
+      }
+    }
+
+    async function refreshToolCard(operationId, includeLogs) {
+      if (!currentSession || !operationId) return;
+      let detail;
+      try {
+        detail = await api(
+          `/v1/get-tool-execution?session_id=${encodeURIComponent(currentSession.session_id)}&operation_id=${encodeURIComponent(operationId)}`
+        );
+      } catch (error) {
+        return;
+      }
+      const state = toolCards.get(operationId);
+      if (!state) return;
+      if (detail.input) {
+        state.code.hidden = false;
+        state.code.textContent = detail.input;
+      }
+      if (includeLogs) {
+        if (detail.stdout) {
+          state.stdout.hidden = false;
+          state.stdout.textContent = detail.stdout;
+        }
+        if (detail.stderr) {
+          state.stderr.hidden = false;
+          state.stderr.textContent = detail.stderr;
+        }
+      }
+      if (detail.status) setBadge(state.status, detail.status, toolStatusMode(detail.status));
+    }
+
+    async function loadSessionTrace() {
+      if (!currentSession) return;
+      let page;
+      try {
+        page = await api(
+          `/v1/list-session-events?session_id=${encodeURIComponent(currentSession.session_id)}&after_seq=0&limit=1000`
+        );
+      } catch (error) {
+        return;
+      }
+      for (const event of page.items) {
+        if (TRACE_EVENT_TYPES.has(event.type)) handleTraceEvent(event);
+      }
+      await Promise.all(
+        [...toolCards.keys()].map((operationId) => refreshToolCard(operationId, true))
+      );
+      for (const trace of document.querySelectorAll(".trace")) {
+        if (!trace.childElementCount) trace.remove();
+      }
     }
 
     function showReply(pending) {
@@ -505,13 +864,16 @@
         `/v1/get-session-state?session_id=${encodeURIComponent(currentSession.session_id)}`
       );
       currentSession = state.session;
+      $("session-title").value = state.session.title;
       currentPending = state.pending_reply;
       eventCursor = Number(state.event_cursor.split(":").pop()) || 0;
       if (state.current_message) {
         currentMessageId = state.current_message.message_id;
         setBadge($("message-status"), state.current_message.status, statusMode(state.current_message.status));
+        $("cancel-message").disabled = !canRequestCancel(state.current_message.status);
       } else {
         setBadge($("message-status"), "无 Message");
+        $("cancel-message").disabled = true;
       }
       showReply(state.pending_reply);
       if (
@@ -524,9 +886,18 @@
 
     function statusMode(status) {
       if (status === "SUCCEEDED") return "ok";
-      if (["FAILED", "TIMED_OUT"].includes(status)) return "err";
-      if (["WAITING_USER", "WAITING_EXTERNAL", "RECOVERING"].includes(status)) return "wait";
+      if (["FAILED", "CANCELLED", "TIMED_OUT"].includes(status)) return "err";
+      if (["WAITING_USER", "WAITING_EXTERNAL", "RECOVERING", "CANCELLING"].includes(status)) {
+        return "wait";
+      }
       return "";
+    }
+
+    function canRequestCancel(status) {
+      return Boolean(
+        status &&
+        !["CANCELLING", "SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"].includes(status)
+      );
     }
 
     function connectReplay() {
@@ -546,9 +917,11 @@
     function processEvent(payload) {
       const event = payload.data;
       appendEvent(payload);
+      if (TRACE_EVENT_TYPES.has(event.type)) handleTraceEvent(event);
       if (event.type === "message.accepted" || event.type === "message.started") {
         currentMessageId = event.message_id;
         setBadge($("message-status"), event.data.status, statusMode(event.data.status));
+        $("cancel-message").disabled = !canRequestCancel(event.data.status);
       } else if (event.type === "message.delta") {
         appendDelta(event.message_id, event.data.text || "");
       } else if (event.type === "message.completed") {
@@ -556,12 +929,23 @@
       } else if (event.type === "message.waiting") {
         setBadge($("message-status"), event.data.status, "wait");
         showReply(event.data.pending_reply);
+        $("cancel-message").disabled = !canRequestCancel(event.data.status);
+      } else if (event.type === "message.recovering") {
+        currentMessageId = event.message_id;
+        setBadge($("message-status"), "RECOVERING", "wait");
+        $("cancel-message").disabled = false;
+      } else if (event.type === "message.cancel_requested") {
+        currentMessageId = event.message_id;
+        setBadge($("message-status"), event.data.status, "wait");
+        $("cancel-message").disabled = true;
       } else if (event.type === "message.resumed") {
         hideReply();
         setBadge($("message-status"), event.data.status, "");
+        $("cancel-message").disabled = false;
       } else if (event.type === "message.finished") {
         setBadge($("message-status"), event.data.status, statusMode(event.data.status));
         currentMessageId = event.message_id;
+        $("cancel-message").disabled = true;
         hideReply();
         if (reconnectSource) {
           reconnectSource.close();
@@ -643,6 +1027,23 @@
       }
     }
 
+    async function cancelMessage() {
+      if (!currentSession || !currentMessageId) return;
+      $("cancel-message").disabled = true;
+      try {
+        const message = await api("/v1/cancel-message", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({message_id: currentMessageId})
+        });
+        currentMessageId = message.message_id;
+        setBadge($("message-status"), message.status, statusMode(message.status));
+        $("cancel-message").disabled = !canRequestCancel(message.status);
+      } catch (error) {
+        setBadge($("message-status"), error.message, "err");
+      }
+    }
+
     async function listFiles() {
       if (!currentSession) return;
       const page = await api(
@@ -686,8 +1087,13 @@
     $("create-session").addEventListener("click", createSession);
     $("rename-session").addEventListener("click", renameSession);
     $("send-message").addEventListener("click", sendMessage);
+    $("cancel-message").addEventListener("click", cancelMessage);
     $("reply-button").addEventListener("click", reply);
     $("refresh-files").addEventListener("click", listFiles);
+    $("user-rel-path").addEventListener("change", loadSessions);
+    $("session-title").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") renameSession();
+    });
     $("message-input").addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendMessage();
     });

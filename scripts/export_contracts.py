@@ -317,6 +317,10 @@ schemas = {
         },
         ["message_id", "pending_id", "text"],
     ),
+    "CancelMessage": obj(
+        {"message_id": uuid},
+        ["message_id"],
+    ),
     "SessionState": obj(
         {
             "session": ref("Session"),
@@ -351,6 +355,30 @@ schemas = {
             "truncated": {"type": "boolean"},
         },
         ["path", "content", "digest", "truncated"],
+    ),
+    "ToolExecution": obj(
+        {
+            "operation_id": uuid,
+            "message_id": uuid,
+            "tool_ref": string(),
+            "status": ref("ToolStatus"),
+            "input": nullable(string()),
+            "stdout": string(),
+            "stderr": string(),
+            "truncated": {"type": "boolean"},
+            "error": nullable(ref("Error")),
+        },
+        [
+            "operation_id",
+            "message_id",
+            "tool_ref",
+            "status",
+            "input",
+            "stdout",
+            "stderr",
+            "truncated",
+            "error",
+        ],
     ),
     "Health": obj(
         {
@@ -413,6 +441,13 @@ event_payloads = {
     "message.recovering": obj(
         {"message_id": uuid, "reason": string()},
         ["message_id", "reason"],
+    ),
+    "message.cancel_requested": obj(
+        {
+            "message_id": uuid,
+            "status": string(enum=["CANCELLING"]),
+        },
+        ["message_id", "status"],
     ),
     "message.finished": obj(
         {
@@ -531,6 +566,7 @@ for name, data in [
     ("EventPageEnvelope", ref("EventPage")),
     ("FilePageEnvelope", ref("FilePage")),
     ("FileContentEnvelope", ref("FileContent")),
+    ("ToolExecutionEnvelope", ref("ToolExecution")),
 ]:
     schemas[name] = envelope(data)
 
@@ -640,6 +676,13 @@ add(
     sse=True,
 )
 add(
+    "/v1/cancel-message",
+    "post",
+    "cancelMessage",
+    "MessageEnvelope",
+    "CancelMessage",
+)
+add(
     "/v1/get-session-state",
     "get",
     "getSessionState",
@@ -654,6 +697,14 @@ add(
     "MessageEnvelope",
     query=(("message_id", uuid),),
     required_query=("message_id",),
+)
+add(
+    "/v1/get-tool-execution",
+    "get",
+    "getToolExecution",
+    "ToolExecutionEnvelope",
+    query=(("session_id", uuid), ("operation_id", uuid)),
+    required_query=("session_id", "operation_id"),
 )
 add(
     "/v1/list-session-messages",
@@ -713,7 +764,7 @@ spec = {
     "openapi": "3.1.0",
     "info": {
         "title": "Code Forge Runtime Integration Contract",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "description": "Architecture contract; endpoints are not implemented yet. Trusted local verification uses default permissions and local subprocess execution.",
     },
     "servers": [{"url": "http://127.0.0.1:8000"}],

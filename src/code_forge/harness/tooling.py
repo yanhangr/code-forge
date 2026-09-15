@@ -20,12 +20,14 @@ def build_operation_spec(
     *,
     operation_id: str,
     run_id: str,
+    session_id: str | None,
     attempt_id: str,
     workspace_id: str,
     workspace_epoch: int,
     user_binding: UserBinding | None,
     working_directory: str | None,
     argv: tuple[str, ...],
+    stdin_text: str | None = None,
     timeout_seconds: int,
     output_limit_bytes: int,
     environment_profile_ref: str,
@@ -46,6 +48,7 @@ def build_operation_spec(
     return OperationSpec(
         operation_id=operation_id,
         run_id=run_id,
+        session_id=session_id,
         attempt_id=attempt_id,
         workspace_ref=workspace_id,
         argv=argv,
@@ -56,6 +59,7 @@ def build_operation_spec(
         workspace_epoch=workspace_epoch,
         mount_spec=mount_spec,
         working_directory=cwd,
+        stdin_text=stdin_text,
     )
 
 

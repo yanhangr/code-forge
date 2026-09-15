@@ -40,6 +40,7 @@ EVENT_TYPE_MAP = {
     EventType.RUN_WAITING.value: PlatformEventType.MESSAGE_WAITING.value,
     EventType.RUN_RESUMED.value: PlatformEventType.MESSAGE_RESUMED.value,
     EventType.RUN_RECOVERING.value: PlatformEventType.MESSAGE_RECOVERING.value,
+    EventType.RUN_CANCEL_REQUESTED.value: PlatformEventType.MESSAGE_CANCEL_REQUESTED.value,
     EventType.RUN_FINISHED.value: PlatformEventType.MESSAGE_FINISHED.value,
     EventType.MESSAGE_DELTA.value: PlatformEventType.MESSAGE_DELTA.value,
     EventType.MESSAGE_COMPLETED.value: PlatformEventType.MESSAGE_COMPLETED.value,
@@ -196,6 +197,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "/v1/list-sessions": lambda: self._list_sessions(query),
                 "/v1/get-session-state": lambda: self._get_session_state(query),
                 "/v1/get-message": lambda: self._get_message(query),
+                "/v1/get-tool-execution": lambda: self._get_tool_execution(query),
                 "/v1/list-session-messages": lambda: self._list_session_messages(query),
                 "/v1/stream-session-events": lambda: self._stream_session_events(query),
                 "/v1/list-session-events": lambda: self._list_session_events(query),
@@ -222,6 +224,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
                 "/v1/create-session": lambda: self._create_session(body),
                 "/v1/update-session": lambda: self._update_session(body),
                 "/v1/send-message": lambda: self._send_message(body),
+                "/v1/cancel-message": lambda: self._cancel_message(body),
                 "/v1/reply": lambda: self._reply(body),
             }
             handler = handlers.get(path)
@@ -283,6 +286,7 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             title,
             "system:runtime/api",
         )
+        self.server.runtime.sync_session_storage(session)
         self._ok(self._session_view(session))
 
     def _get_session(self, query: dict[str, list[str]]) -> None:
@@ -331,6 +335,25 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
         if not message:
             raise DomainError(ErrorCode.RUN_NOT_FOUND, "Message not found")
         self._ok(self._message_view(message))
+
+    def _get_tool_execution(self, query: dict[str, list[str]]) -> None:
+        session = self._require_session(query)
+        operation_id = self._required_query(query, "operation_id")
+        detail = self.server.runtime.get_tool_execution(session["id"], operation_id)
+        self._ok(self._tool_execution_view(detail))
+
+    def _tool_execution_view(self, detail: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "operation_id": detail["operation_id"],
+            "message_id": detail["message_id"],
+            "tool_ref": detail["tool_ref"],
+            "status": detail["status"],
+            "input": detail["input"],
+            "stdout": detail["stdout"],
+            "stderr": detail["stderr"],
+            "truncated": detail["truncated"],
+            "error": self._public_error(detail.get("error"), detail["message_id"]),
+        }
 
     def _list_session_messages(self, query: dict[str, list[str]]) -> None:
         session = self._require_session(query)
@@ -410,6 +433,18 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             message_id,
             before,
         )
+
+    def _cancel_message(self, body: dict[str, Any]) -> None:
+        message_id = self._required_string(body, "message_id")
+        message = self.server.runtime.store.get_run_unscoped(message_id)
+        if not message:
+            raise DomainError(ErrorCode.RUN_NOT_FOUND, "Message not found")
+        cancelled = self.server.runtime.cancel_run(
+            message["scope_id"],
+            message_id,
+            actor_ref="platform:api",
+        )
+        self._ok(self._message_view(cancelled))
 
     def _stream_session_events(self, query: dict[str, list[str]]) -> None:
         session = self._require_session(query)
@@ -576,6 +611,11 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             }
         elif event["type"] == EventType.RUN_RECOVERING.value:
             payload = {"message_id": message_id, "reason": data.get("reason", "")}
+        elif event["type"] == EventType.RUN_CANCEL_REQUESTED.value:
+            payload = {
+                "message_id": message_id,
+                "status": MessageStatus.CANCELLING.value,
+            }
         elif event["type"] == EventType.RUN_FINISHED.value:
             payload = {
                 "message_id": message_id,
@@ -647,10 +687,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
             RunStatus.WAITING_USER.value: MessageStatus.WAITING_USER.value,
             RunStatus.WAITING_EXTERNAL.value: MessageStatus.WAITING_EXTERNAL.value,
             RunStatus.RECOVERING.value: MessageStatus.RECOVERING.value,
-            RunStatus.CANCELLING.value: MessageStatus.RUNNING.value,
+            RunStatus.CANCELLING.value: MessageStatus.CANCELLING.value,
             RunStatus.SUCCEEDED.value: MessageStatus.SUCCEEDED.value,
             RunStatus.FAILED.value: MessageStatus.FAILED.value,
-            RunStatus.CANCELLED.value: MessageStatus.FAILED.value,
+            RunStatus.CANCELLED.value: MessageStatus.CANCELLED.value,
             RunStatus.TIMED_OUT.value: MessageStatus.TIMED_OUT.value,
         }
         return mapping.get(status, MessageStatus.FAILED.value)
@@ -849,5 +889,6 @@ def create_server(
         repository=plugins.repository,
         authorization=plugins.authorization,
     )
+    runtime.materialize_user_storage()
     runtime.start_worker()
     return RuntimeHTTPServer((host, port), runtime)

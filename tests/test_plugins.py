@@ -39,6 +39,13 @@ class PluginRegistryTests(unittest.TestCase):
         self.assertEqual(type(plugins.harness).__name__, "LocalDeterministicHarness")
         self.assertEqual(type(plugins.context_manager).__name__, "ConversationContextManager")
 
+    def test_default_skill_root_mirrors_user_config_layout(self):
+        plugins = build_plugins(
+            self.root,
+            {"FORGE_MODEL": "none", "FORGE_HARNESS": "local"},
+        )
+        self.assertEqual(plugins.resolver.skills_root, self.root / "config" / "skills")
+
     def test_custom_plugin_can_replace_builtin(self):
         registry = build_builtin_registry()
         registry.register("context", "dummy", lambda **_: DummyContext())

@@ -22,15 +22,35 @@ from code_forge.contracts import (
 from code_forge.ports import ExecutionBackend
 from code_forge.workspace.store import WorkspaceStore
 
+_SAFE_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TERM",
+    "TZ",
+    "PYTHONIOENCODING",
+    "PYTHONUNBUFFERED",
+    "PYTHONDONTWRITEBYTECODE",
+)
+
 
 def _clean_env() -> dict[str, str]:
-    blocked = {
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "AWS_SECRET_ACCESS_KEY",
-        "DATABASE_URL",
-    }
-    return {key: value for key, value in os.environ.items() if key not in blocked}
+    """Minimal environment for tool subprocesses.
+
+    Runtime service configuration (FORGE_*, model credentials, ...) and unrelated
+    secrets must never reach model-authored code. Keep only interpreter basics.
+    """
+
+    return {key: os.environ[key] for key in _SAFE_ENV_KEYS if key in os.environ}
 
 
 @dataclass
@@ -68,10 +88,10 @@ class LocalProcessBackend(ExecutionBackend):
         async with self._lock:
             existing = self._operations.get(spec.operation_id)
             if existing:
-                if existing.spec.argv != spec.argv:
+                if existing.spec.argv != spec.argv or existing.spec.stdin_text != spec.stdin_text:
                     raise DomainError(
                         ErrorCode.IDEMPOTENCY_CONFLICT,
-                        "Operation id is already bound to different argv",
+                        "Operation id is already bound to different input",
                     )
                 return spec.operation_id
             cwd = self.workspace_store.attempt_dir(
@@ -88,14 +108,36 @@ class LocalProcessBackend(ExecutionBackend):
             if spec.working_directory is not None:
                 cwd = Path(spec.working_directory).resolve(strict=False)
                 self._validate_working_directory(spec, cwd)
-            op_dir = self.root / spec.operation_id
+            if spec.user_binding is not None and spec.session_id:
+                self.workspace_store.ensure_user_layout(
+                    spec.workspace_ref,
+                    spec.user_binding,
+                )
+                op_dir = self.workspace_store.tool_output_dir(
+                    spec.user_binding,
+                    spec.session_id,
+                    spec.run_id,
+                    spec.operation_id,
+                )
+            else:
+                op_dir = self.root / spec.operation_id
             op_dir.mkdir(parents=True, exist_ok=True)
             stdout_path = op_dir / "stdout.log"
             stderr_path = op_dir / "stderr.log"
+            if spec.stdin_text is not None:
+                input_path = op_dir / "input.txt"
+                temporary_input = input_path.with_suffix(".txt.tmp")
+                temporary_input.write_text(spec.stdin_text, encoding="utf-8")
+                temporary_input.replace(input_path)
             process = await asyncio.create_subprocess_exec(
                 *spec.argv,
                 cwd=cwd,
                 env=_clean_env(),
+                stdin=(
+                    asyncio.subprocess.PIPE
+                    if spec.stdin_text is not None
+                    else asyncio.subprocess.DEVNULL
+                ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -152,19 +194,35 @@ class LocalProcessBackend(ExecutionBackend):
                 operation.spec.output_limit_bytes,
             )
         )
+        stdin_task = None
+        if operation.process.stdin is not None:
+            stdin_task = asyncio.create_task(
+                self._write_stdin(operation.process.stdin, operation.spec.stdin_text or "")
+            )
         wait_task = asyncio.create_task(operation.process.wait())
+        tasks: set[asyncio.Task[Any]] = {wait_task, stdout_task, stderr_task}
+        if stdin_task is not None:
+            tasks.add(stdin_task)
         try:
             done, pending = await asyncio.wait(
-                {wait_task, stdout_task, stderr_task},
+                tasks,
                 timeout=operation.spec.timeout_seconds,
                 return_when=asyncio.ALL_COMPLETED,
             )
-            if wait_task not in done:
+            if pending:
                 self._kill_process_group(operation.process)
-                await asyncio.wait_for(wait_task, timeout=10)
-                operation.status = ToolStatus.FAILED
-                operation.error_code = ErrorCode.EXECUTION_FAILED
-                operation.error_message = "Operation timed out"
+                await self._wait_after_termination(wait_task)
+                for task in pending:
+                    task.cancel()
+                operation.status = (
+                    ToolStatus.CANCELLED if operation.cancelled.is_set() else ToolStatus.FAILED
+                )
+                if operation.status == ToolStatus.FAILED:
+                    operation.error_code = ErrorCode.EXECUTION_FAILED
+                    operation.error_message = (
+                        f"Operation timed out after {operation.spec.timeout_seconds} seconds"
+                    )
+                    self._append_diagnostic(stderr_path, operation.error_message)
             elif operation.cancelled.is_set():
                 operation.status = ToolStatus.CANCELLED
             else:
@@ -180,7 +238,13 @@ class LocalProcessBackend(ExecutionBackend):
             operation.status = ToolStatus.FAILED
             operation.error_code = ErrorCode.EXECUTION_FAILED
             operation.error_message = str(exc) or exc.__class__.__name__
-        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            self._append_diagnostic(stderr_path, operation.error_message)
+        await asyncio.gather(
+            stdout_task,
+            stderr_task,
+            *([stdin_task] if stdin_task is not None else []),
+            return_exceptions=True,
+        )
         operation.stdout_truncated = stdout_task.result() if not stdout_task.cancelled() else True
         operation.stderr_truncated = stderr_task.result() if not stderr_task.cancelled() else True
         if operation.status == ToolStatus.SUCCEEDED:
@@ -225,6 +289,34 @@ class LocalProcessBackend(ExecutionBackend):
                 if write_size < len(chunk):
                     truncated = True
         return truncated
+
+    @staticmethod
+    async def _write_stdin(
+        stream: asyncio.StreamWriter,
+        text: str,
+    ) -> None:
+        try:
+            stream.write(text.encode("utf-8"))
+            await stream.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            stream.close()
+
+    @staticmethod
+    async def _wait_after_termination(wait_task: asyncio.Task[Any]) -> None:
+        try:
+            await asyncio.wait_for(asyncio.shield(wait_task), timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    @staticmethod
+    def _append_diagnostic(path: Path, message: str) -> None:
+        try:
+            with path.open("ab") as handle:
+                handle.write(f"{message}\n".encode())
+        except OSError:
+            pass
 
     @staticmethod
     def _kill_process_group(process: asyncio.subprocess.Process) -> None:

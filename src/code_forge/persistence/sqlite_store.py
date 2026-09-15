@@ -898,6 +898,25 @@ class SqliteRuntimeStore:
             ).fetchone()
         return self._row_dict(row)
 
+    def list_bound_sessions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT s.id,s.scope_id,s.workspace_id,s.title,s.external_ref,s.thread_id,
+                       s.next_event_seq,s.date_created,s.created_by,s.date_updated,s.updated_by,
+                       w.storage_ref,w.storage_root,w.tenant_ref,w.user_ref,w.user_path,
+                       w.user_rel_path,w.project_ref,w.project_path,
+                       w.current_revision,w.active_attempt_id AS workspace_active_attempt_id,
+                       w.workspace_epoch,w.lease_until,w.heartbeat_at
+                FROM sessions s
+                JOIN workspaces w
+                  ON w.scope_id = s.scope_id AND w.id = s.workspace_id
+                WHERE w.user_path <> '' AND w.project_path <> ''
+                ORDER BY s.date_created,s.id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def require_session(self, scope_id: str, session_id: str) -> None:
         if self.get_session(scope_id, session_id) is None:
             raise DomainError(ErrorCode.SESSION_NOT_FOUND, "Session not found")
@@ -1232,6 +1251,17 @@ class SqliteRuntimeStore:
         with self._lock:
             row = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return self._decode_run(dict(row)) if row else None
+
+    def get_tool_execution(self, operation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM tool_executions WHERE id = ?", (operation_id,)
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["error"] = self._parse_json(data.get("error"))
+        return data
 
     def list_runs(
         self, scope_id: str, session_id: str, cursor: str | None, limit: int

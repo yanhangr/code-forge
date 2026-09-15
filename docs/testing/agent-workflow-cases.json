@@ -780,7 +780,8 @@
       "planned_test": "tests/integration/test_flow_05.py::test_b35",
       "status": "SPEC_ONLY",
       "core_evidence": [
-        "tests/test_core.py::StateTests.test_cancel_idempotent_and_not_success"
+        "tests/test_core.py::StateTests.test_cancel_idempotent_and_not_success",
+        "tests/test_transport_user_binding.py::PlatformApiTransportTests.test_cancel_message_is_public_and_idempotent"
       ],
       "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
     },

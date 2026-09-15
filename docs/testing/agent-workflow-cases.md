@@ -772,6 +772,7 @@
 
 已存在的部分核心证据：
 - [StateTests.test_cancel_idempotent_and_not_success](../../tests/test_core.py)
+- [PlatformApiTransportTests.test_cancel_message_is_public_and_idempotent](../../tests/test_transport_user_binding.py)
 
 ## TC-B36：超时与未知进程优先核验
 

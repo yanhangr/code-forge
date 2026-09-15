@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -11,12 +12,14 @@ from code_forge.contracts import (
     DomainError,
     ErrorCode,
     ExecutionContext,
+    OperationSpec,
     RunRequest,
     RunStatus,
     SkillBinding,
     TaskOutcome,
+    ToolStatus,
 )
-from code_forge.execution.local_process_backend import LocalProcessBackend
+from code_forge.execution.local_process_backend import LocalProcessBackend, _clean_env
 from code_forge.harness.local import LocalDeterministicHarness
 from code_forge.persistence.sqlite_store import SqliteRunRepository, SqliteRuntimeStore
 from code_forge.ports import DefaultAllowAuthorization
@@ -132,14 +135,13 @@ Use execute_python carefully.
         self.assertEqual(error.exception.code, ErrorCode.IDEMPOTENCY_CONFLICT)
 
     async def test_python_execution_commits_workspace_and_finishes(self):
-        await self._submit(
-            "```python\n"
+        code = (
             "from pathlib import Path\n"
             "value = sum(i * i for i in range(1, 101))\n"
             "print(value)\n"
             "Path('result.txt').write_text(str(value))\n"
-            "```"
         )
+        await self._submit(f"```python\n{code}```")
         claimed = self.store.claim_next_run(
             "default",
             "test-worker",
@@ -153,13 +155,50 @@ Use execute_python carefully.
         self.assertIn("338350", result["output"])
 
         files = self.workspace.list_files(claimed["workspace_id"])
-        self.assertIn("result.txt", {item["path"] for item in files})
+        paths = {item["path"] for item in files}
+        self.assertIn("result.txt", paths)
+        self.assertFalse(any(Path(path).name.startswith("model_") for path in paths))
+        operation = self.store.conn.execute(
+            """
+            SELECT id FROM tool_executions
+            WHERE scope_id = ? AND run_id = ? AND tool_ref = 'python'
+            """,
+            ("default", result["id"]),
+        ).fetchone()
+        self.assertIsNotNone(operation)
+        operation_dir = self.operation_root / operation["id"]
+        self.assertEqual((operation_dir / "input.txt").read_text(encoding="utf-8"), code)
         events, _ = self.store.list_events("default", result["id"], 0, 100)
         event_types = [event["type"] for event in events]
         self.assertIn("tool.prepared", event_types)
         self.assertIn("tool.started", event_types)
         self.assertIn("tool.finished", event_types)
         self.assertIn("run.finished", event_types)
+
+    async def test_operation_timeout_writes_diagnostic_to_stderr(self):
+        spec = OperationSpec(
+            operation_id="timeout-operation",
+            run_id="timeout-run",
+            session_id=None,
+            attempt_id="timeout-attempt",
+            workspace_ref="timeout-workspace",
+            argv=("python3", "-"),
+            timeout_seconds=1,
+            output_limit_bytes=4096,
+            environment_profile_ref="local@1",
+            stdin_text="import time\ntime.sleep(5)\n",
+        )
+        await self.execution.submit(spec)
+        while True:
+            result = await self.execution.get_status(spec.operation_id)
+            if result.status != ToolStatus.RUNNING:
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(result.status, ToolStatus.FAILED)
+        self.assertIn(
+            "Operation timed out after 1 seconds",
+            Path(result.stderr_ref or "").read_text(encoding="utf-8"),
+        )
 
     async def test_no_model_returns_blocked_instead_of_fake_success(self):
         await self._submit("请帮我完成一个没有代码块的普通任务")
@@ -182,6 +221,23 @@ Use execute_python carefully.
         event_types = [event["type"] for event in events]
         self.assertIn("run.cancel_requested", event_types)
         self.assertIn("run.finished", event_types)
+
+
+class ToolEnvironmentTests(unittest.TestCase):
+    def test_tool_subprocess_does_not_inherit_runtime_config(self):
+        import os
+
+        previous = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(previous)))
+        os.environ["FORGE_SKILLS_DIR"] = "/tmp/other-skills"
+        os.environ["DEEPSEEK_API_KEY"] = "secret"
+        os.environ["PATH"] = "/usr/bin"
+
+        env = _clean_env()
+
+        self.assertNotIn("FORGE_SKILLS_DIR", env)
+        self.assertNotIn("DEEPSEEK_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
 
 
 if __name__ == "__main__":

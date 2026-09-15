@@ -115,6 +115,33 @@ class PlatformApiTransportTests(unittest.TestCase):
         session = created["data"]
         self.assertEqual(session["project_rel_path"], "workspace/projects/P001")
         self.assertNotIn("run_id", session)
+        session_storage = self.user_path / "sessions" / session["session_id"]
+        self.assertTrue((session_storage / "session.json").is_file())
+
+        _, other = self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": self.storage_root.as_posix(),
+                "user_rel_path": "T001/users/U002",
+                "project_ref": "P002",
+            },
+            expected_status=201,
+        )
+        assert isinstance(other, dict)
+        _, filtered = self.request(
+            "GET",
+            "/v1/list-sessions?user_rel_path=T001%2Fusers%2FU001&limit=100",
+            expected_status=200,
+        )
+        assert isinstance(filtered, dict)
+        self.assertEqual(
+            [item["session_id"] for item in filtered["data"]["items"]],
+            [session["session_id"]],
+        )
+        self.assertNotIn(
+            other["data"]["session_id"], [item["session_id"] for item in filtered["data"]["items"]]
+        )
 
         _, updated = self.request(
             "POST",
@@ -124,6 +151,10 @@ class PlatformApiTransportTests(unittest.TestCase):
         )
         assert isinstance(updated, dict)
         self.assertEqual(updated["data"]["title"], "销售分析")
+        self.assertEqual(
+            json.loads((session_storage / "session.json").read_text(encoding="utf-8"))["title"],
+            "销售分析",
+        )
 
         _, stream_text = self.request(
             "POST",
@@ -150,6 +181,25 @@ class PlatformApiTransportTests(unittest.TestCase):
         self.assertNotIn("run_id", json.dumps(events))
         message_id = events[0]["envelope"]["data"]["message_id"]
 
+        prepared = next(item for item in events if item["event"] == "tool.prepared")
+        operation_id = prepared["envelope"]["data"]["data"]["operation_id"]
+
+        transcript = session_storage / "transcript-000001.jsonl"
+        for _ in range(50):
+            lines = (
+                transcript.read_text(encoding="utf-8").splitlines() if transcript.is_file() else []
+            )
+            records = [json.loads(line) for line in lines if line]
+            if {record["role"] for record in records} == {"user", "assistant"}:
+                break
+            threading.Event().wait(0.02)
+        self.assertEqual([record["role"] for record in records], ["user", "assistant"])
+        self.assertEqual(records[0]["content"], "```python\nprint(2 + 3)\n```")
+        self.assertEqual(records[1]["content"], "5")
+        self.assertTrue(
+            (self.user_path / "tool-output" / session["session_id"] / message_id).is_dir()
+        )
+
         _, message = self.request(
             "GET",
             f"/v1/get-message?message_id={message_id}",
@@ -160,6 +210,20 @@ class PlatformApiTransportTests(unittest.TestCase):
         self.assertEqual(message["data"]["status"], "SUCCEEDED")
         self.assertEqual(message["data"]["task_outcome"], "completed")
         self.assertEqual(message["data"]["output"], "5")
+
+        _, execution = self.request(
+            "GET",
+            f"/v1/get-tool-execution?session_id={session['session_id']}"
+            f"&operation_id={operation_id}",
+            expected_status=200,
+        )
+        assert isinstance(execution, dict)
+        self.assertEqual(execution["data"]["operation_id"], operation_id)
+        self.assertEqual(execution["data"]["message_id"], message_id)
+        self.assertEqual(execution["data"]["tool_ref"], "python")
+        self.assertEqual(execution["data"]["status"], "SUCCEEDED")
+        self.assertEqual(execution["data"]["input"], "print(2 + 3)\n")
+        self.assertEqual(execution["data"]["stdout"], "5\n")
 
         _, state = self.request(
             "GET",
@@ -230,6 +294,81 @@ class PlatformApiTransportTests(unittest.TestCase):
         self.assertEqual(status, 409)
         assert isinstance(payload, dict)
         self.assertEqual(payload["code"], "1005")
+
+    def test_cancel_message_is_public_and_idempotent(self):
+        _, created = self.request(
+            "POST",
+            "/v1/create-session",
+            body={
+                "storage_root": self.storage_root.as_posix(),
+                "user_rel_path": "T001/users/U001",
+                "project_ref": "P001",
+            },
+        )
+        assert isinstance(created, dict)
+        session_id = created["data"]["session_id"]
+        self.server.runtime.stop_worker()
+
+        result: dict[str, object] = {}
+
+        def open_stream() -> None:
+            try:
+                result["response"] = self.request(
+                    "POST",
+                    "/v1/send-message",
+                    body={"session_id": session_id, "input": "first"},
+                )
+            except Exception as error:  # pragma: no cover - assertion below carries details
+                result["error"] = error
+
+        thread = threading.Thread(target=open_stream, daemon=True)
+        thread.start()
+        for _ in range(50):
+            if self.server.runtime.store.session_event_cursor(session_id):
+                break
+            threading.Event().wait(0.02)
+
+        current = self.server.runtime.store.get_current_message(session_id)
+        self.assertIsNotNone(current)
+        status, cancelled = self.request(
+            "POST",
+            "/v1/cancel-message",
+            body={"message_id": current["id"]},
+        )
+        self.assertEqual(status, 200)
+        assert isinstance(cancelled, dict)
+        self.assertEqual(cancelled["code"], "0000")
+        self.assertEqual(cancelled["data"]["status"], "CANCELLED")
+        message_id = cancelled["data"]["message_id"]
+
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", result)
+        _, stream_text = result["response"]
+        assert isinstance(stream_text, str)
+        events = parse_sse(stream_text)
+        self.assertEqual(
+            [event["event"] for event in events][-2:],
+            ["message.cancel_requested", "message.finished"],
+        )
+        self.assertEqual(events[-1]["envelope"]["data"]["data"]["status"], "CANCELLED")
+
+        _, repeated = self.request(
+            "POST",
+            "/v1/cancel-message",
+            body={"message_id": message_id},
+        )
+        assert isinstance(repeated, dict)
+        self.assertEqual(repeated["data"]["status"], "CANCELLED")
+        _, replay = self.request(
+            "GET",
+            f"/v1/list-session-events?session_id={session_id}&after_seq=0",
+        )
+        assert isinstance(replay, dict)
+        self.assertEqual(
+            sum(item["type"] == "message.cancel_requested" for item in replay["data"]["items"]),
+            1,
+        )
 
 
 if __name__ == "__main__":

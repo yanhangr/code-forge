@@ -19,13 +19,17 @@
    POST /v1/reply
    继续通过同一 SSE 接收恢复后的事件
 
-4. 页面刷新或网络断开
+4. 如果需要终止当前 Message
+   POST /v1/cancel-message
+   等待正在使用的 SSE 或重连流收到 message.finished
+
+5. 页面刷新或网络断开
    GET /v1/get-session-state
    -> 取得 event_cursor
    GET /v1/stream-session-events
    -> 从 event_cursor 之后恢复订阅
 
-5. 查询历史
+6. 查询历史
    GET /v1/get-message
    GET /v1/list-session-messages
 ```
@@ -34,8 +38,8 @@
 
 | 级别 | 接口 | 说明 |
 | --- | --- | --- |
-| 核心写 | `create-session`、`update-session`、`send-message`、`reply` | 主流程；发送和回复直接返回 SSE。 |
-| 核心读 | `get-session-state`、`get-message` | 状态查询。 |
+| 核心写 | `create-session`、`update-session`、`send-message`、`cancel-message`、`reply` | 主流程；发送和回复直接返回 SSE，终止返回当前 Message 状态。 |
+| 核心读 | `get-session-state`、`get-message`、`get-tool-execution` | 状态查询与工具/Skill 轨迹展示。 |
 | 断线恢复 | `stream-session-events` | 只用于页面刷新或网络重连。 |
 | 历史恢复 | `get-session`、`list-sessions`、`list-session-messages`、`list-session-events` | 刷新、翻页和补偿。 |
 | 诊断 | `health`、`list-session-files`、`read-session-file` | 不作为主链路依赖。 |
@@ -245,8 +249,10 @@ Runtime 会发现 `analysis` 和 `report` 两个 Skill 包，忽略 `helper`。
 | `WAITING_USER` | 等待用户输入。 |
 | `WAITING_EXTERNAL` | 等待外部依赖。 |
 | `RECOVERING` | 正在核验恢复。 |
+| `CANCELLING` | 已接受终止请求，正在停止并核验已有操作。 |
 | `SUCCEEDED` | 正常结束。 |
 | `FAILED` | 失败。 |
+| `CANCELLED` | 已按终止请求结束。 |
 | `TIMED_OUT` | 已超时。 |
 
 ### 4.4 Error
@@ -423,7 +429,7 @@ Runtime 会发现 `analysis` 和 `report` 两个 Skill 包，忽略 `helper`。
 2. Runtime 首期只执行当前 Session 的一条 Message。
 3. 如果 Session 已有未结束的 Message，返回业务码 `1005` 和 HTTP 409，不创建新 Message。
 4. 是否排队、等待还是改变对话方向由 Platform 决定。
-5. 首期不支持打断正在执行的 Message。
+5. 正在执行的 Message 通过 `cancel-message` 显式终止；已有未结束 Message 时仍不能提交下一条 Message。
 6. 网络超时后不要盲目重发；先调用 `get-session-state` 或 `list-session-messages`。
 
 该设计代价是：Runtime 不承诺网络超时场景下的 exactly-once。Platform 关闭创建消息的自动
@@ -610,6 +616,75 @@ data: {"code":"0000","message":"success","data":{"event_id":"55555555-5555-4555-
 
 同一个 `pending_id` 重复提交不会再次消费；已解决的 `pending_id` 不再接受新内容。
 
+### 5.10 `POST /v1/cancel-message`
+
+作用：终止一条尚未结束的 Message。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `message_id` | UUID | 是 | 要终止的 Message。 |
+
+请求示例：
+
+```json
+{
+  "message_id": "22222222-2222-4222-8222-222222222222"
+}
+```
+
+响应类型：`application/json`。返回终止请求处理后的当前 Message。
+
+`QUEUED` Message 可以直接返回 `CANCELLED`；正在执行或等待中的 Message 通常先返回
+`CANCELLING`。此时仅表示 Runtime 已接受终止请求，不表示 Python、工具或远端副作用
+已经停止。Platform 必须继续等待原 SSE 或 `stream-session-events` 收到该
+`message_id` 的 `message.finished`，再以其中的 `CANCELLED` 状态作为终态。
+
+终止请求幂等：已经处于 `CANCELLING` 或终态的 Message 返回当前状态，不重复写入审计
+或事件。终止不会撤销已经提交的文件，也不会撤回已经发生的远端副作用。
+
+### 5.11 `GET /v1/get-tool-execution`
+
+作用：读取一次工具执行的输入与受限输出，用于 Platform 展示可读的工具/Skill 轨迹。
+Platform 从 `tool.prepared`/`tool.started`/`tool.finished` 事件取得 `operation_id`，
+再用本接口补齐实际执行的代码、stdout 和 stderr。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `session_id` | UUID | 是 | 该操作所属 Session；用于校验归属。 |
+| `operation_id` | UUID | 是 | 工具执行 ID。 |
+
+返回示例：
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "operation_id": "66666666-6666-4666-8666-666666666666",
+    "message_id": "22222222-2222-4222-8222-222222222222",
+    "tool_ref": "python",
+    "status": "SUCCEEDED",
+    "input": "print(2 + 3)\n",
+    "stdout": "5\n",
+    "stderr": "",
+    "truncated": false,
+    "error": null
+  }
+}
+```
+
+规则：
+
+- `input` 是实际通过 stdin 交给子进程的原始代码或命令；受大小上限约束，超限时
+  `truncated` 为 `true`。
+- `stdout`/`stderr` 从操作目录读取，可能比 `tool.output` 事件更完整；事件仍用于实时展示。
+- 归属或 `operation_id` 不匹配时返回消息不存在（404），不暴露其他 Session 的工具信息。
+- 本接口是只读诊断接口，不改变任何 Message 或工具状态。
+
 ## 6. 事件接口
 
 ### 6.1 `GET /v1/stream-session-events`
@@ -649,6 +724,7 @@ data: {"code":"0000","message":"success","data":{"event_id":"44444444-4444-4444-
 | `message.waiting` | 等待用户或外部依赖。 |
 | `message.resumed` | 用户回应后恢复。 |
 | `message.recovering` | 正在核验恢复。 |
+| `message.cancel_requested` | 已接受终止请求，进入 `CANCELLING`。 |
 | `message.finished` | Message 终态。 |
 | `message.delta` | 模型文本增量。 |
 | `message.completed` | 完整模型回复。 |

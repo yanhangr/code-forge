@@ -77,25 +77,11 @@ class LocalDeterministicHarness:
                 break
             logical_key = f"{tool_ref}:{attempt_id}:{index}"
             params_digest = hashlib.sha256((tool_ref + "\0" + code).encode("utf-8")).hexdigest()
-            input_ref = f"local-attempt:{attempt_id}:{logical_key}"
+            input_ref = f"local-stdin:{attempt_id}:{logical_key}"
             if tool_ref == "python":
-                self.workspace.write_text(
-                    workspace_id,
-                    attempt_id,
-                    f"main_{index}.py",
-                    code,
-                    user_binding,
-                )
-                argv = ("python3", f"main_{index}.py")
+                argv = ("python3", "-")
             elif tool_ref == "command":
-                self.workspace.write_text(
-                    workspace_id,
-                    attempt_id,
-                    f"command_{index}.sh",
-                    code,
-                    user_binding,
-                )
-                argv = ("/bin/bash", f"command_{index}.sh")
+                argv = ("/bin/bash", "-s")
             else:
                 continue
 
@@ -115,12 +101,14 @@ class LocalDeterministicHarness:
             spec = build_operation_spec(
                 operation_id=operation_id,
                 run_id=run_id,
+                session_id=str(run.get("session_id") or ""),
                 attempt_id=attempt_id,
                 workspace_id=workspace_id,
                 workspace_epoch=workspace_epoch,
                 user_binding=user_binding,
                 working_directory=working_directory,
                 argv=argv,
+                stdin_text=code,
                 timeout_seconds=30,
                 output_limit_bytes=256 * 1024,
                 environment_profile_ref="local@1",
@@ -373,27 +361,11 @@ class LocalDeterministicHarness:
             return ToolStatus.CANCELLED, "", "Run was cancelled"
         logical_key = f"{tool_ref}:{attempt_id}:{uuid4().hex}"
         params_digest = hashlib.sha256((tool_ref + "\0" + code).encode("utf-8")).hexdigest()
-        input_ref = f"local-attempt:{attempt_id}:{logical_key}"
+        input_ref = f"local-stdin:{attempt_id}:{logical_key}"
         if tool_ref == "python":
-            filename = f"model_{uuid4().hex}.py"
-            self.workspace.write_text(
-                workspace_id,
-                attempt_id,
-                filename,
-                code,
-                user_binding,
-            )
-            argv = ("python3", filename)
+            argv = ("python3", "-")
         elif tool_ref == "command":
-            filename = f"model_{uuid4().hex}.sh"
-            self.workspace.write_text(
-                workspace_id,
-                attempt_id,
-                filename,
-                code,
-                user_binding,
-            )
-            argv = ("/bin/bash", filename)
+            argv = ("/bin/bash", "-s")
         else:
             return ToolStatus.FAILED, "", f"Unsupported tool: {tool_ref}"
 
@@ -424,12 +396,14 @@ class LocalDeterministicHarness:
         spec = build_operation_spec(
             operation_id=operation_id,
             run_id=run["id"],
+            session_id=run["session_id"],
             attempt_id=attempt_id,
             workspace_id=workspace_id,
             workspace_epoch=workspace_epoch,
             user_binding=user_binding,
             working_directory=working_directory,
             argv=argv,
+            stdin_text=code,
             timeout_seconds=30,
             output_limit_bytes=256 * 1024,
             environment_profile_ref="local@1",

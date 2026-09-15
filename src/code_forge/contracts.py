@@ -30,15 +30,17 @@ TERMINAL_STATUSES = frozenset(
 
 
 class MessageStatus(StrEnum):
-    """Platform-facing lifecycle; internal Run cancellation is not public in v1."""
+    """Platform-facing lifecycle."""
 
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     WAITING_USER = "WAITING_USER"
     WAITING_EXTERNAL = "WAITING_EXTERNAL"
     RECOVERING = "RECOVERING"
+    CANCELLING = "CANCELLING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
     TIMED_OUT = "TIMED_OUT"
 
 
@@ -86,6 +88,7 @@ class PlatformEventType(StrEnum):
     MESSAGE_WAITING = "message.waiting"
     MESSAGE_RESUMED = "message.resumed"
     MESSAGE_RECOVERING = "message.recovering"
+    MESSAGE_CANCEL_REQUESTED = "message.cancel_requested"
     MESSAGE_FINISHED = "message.finished"
     MESSAGE_DELTA = "message.delta"
     MESSAGE_COMPLETED = "message.completed"
@@ -385,6 +388,7 @@ class ExistingRequest:
 class OperationSpec:
     operation_id: str
     run_id: str
+    session_id: str | None
     attempt_id: str
     workspace_ref: str
     argv: tuple[str, ...]
@@ -396,6 +400,7 @@ class OperationSpec:
     workspace_epoch: int = 0
     mount_spec: MountSpec | None = None
     working_directory: str | None = None
+    stdin_text: str | None = None
 
 
 @dataclass(frozen=True)

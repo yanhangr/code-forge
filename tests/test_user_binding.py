@@ -247,12 +247,13 @@ class BoundRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code, ErrorCode.SKILL_NOT_FOUND)
 
     async def test_bound_execution_commits_project_revision(self):
-        await self._submit(
-            "```python\n"
+        code = (
             "from pathlib import Path\n"
             "Path('result.txt').write_text('bound-ok')\n"
             "print('bound-ok')\n"
-            "```",
+        )
+        await self._submit(
+            f"```python\n{code}```",
             "bound-key",
         )
         claimed = self.store.claim_next_run(
@@ -270,6 +271,7 @@ class BoundRuntimeTests(unittest.IsolatedAsyncioTestCase):
             (self.project_path / "result.txt").read_text(encoding="utf-8"),
             "bound-ok",
         )
+        self.assertEqual(list(self.project_path.glob("model_*")), [])
         workspace = self.store.get_workspace("user-1", claimed["workspace_id"])
         self.assertIsNotNone(workspace)
         self.assertEqual(workspace["user_ref"], "user-1")
@@ -281,6 +283,22 @@ class BoundRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ).fetchone()
         self.assertIsNotNone(revision)
         self.assertTrue(Path(revision["storage_ref"]).is_dir())
+        self.assertEqual(list(Path(revision["storage_ref"]).glob("model_*")), [])
+        operation = self.store.conn.execute(
+            """
+            SELECT id FROM tool_executions
+            WHERE scope_id = ? AND run_id = ? AND tool_ref = 'python'
+            """,
+            ("user-1", result["id"]),
+        ).fetchone()
+        self.assertIsNotNone(operation)
+        operation_dir = self.workspace.tool_output_dir(
+            self.binding,
+            self.session["id"],
+            result["id"],
+            operation["id"],
+        )
+        self.assertEqual((operation_dir / "input.txt").read_text(encoding="utf-8"), code)
 
     async def test_same_project_sessions_share_workspace_and_writer_lease(self):
         second = self.runtime.create_session(

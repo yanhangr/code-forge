@@ -84,6 +84,8 @@ class RuntimeStorePort(Protocol):
 
     def get_session(self, scope_id: str, session_id: str) -> dict[str, Any] | None: ...
 
+    def list_bound_sessions(self) -> list[dict[str, Any]]: ...
+
     def list_sessions(
         self, scope_id: str, cursor: str | None, limit: int
     ) -> tuple[list[dict[str, Any]], str | None]: ...
@@ -108,6 +110,8 @@ class RuntimeStorePort(Protocol):
     def list_runs(
         self, scope_id: str, session_id: str, cursor: str | None, limit: int
     ) -> tuple[list[dict[str, Any]], str | None]: ...
+
+    def get_tool_execution(self, operation_id: str) -> dict[str, Any] | None: ...
 
     def claim_next_run(
         self,
@@ -275,6 +279,25 @@ class WorkspacePort(Protocol):
     def list_files(
         self, workspace_id: str, user_binding: UserBinding | None = None
     ) -> list[dict[str, object]]: ...
+
+    def ensure_user_layout(
+        self,
+        workspace_id: str,
+        user_binding: UserBinding,
+    ) -> Any: ...
+
+    def ensure_session_storage(
+        self,
+        session: dict[str, Any],
+        user_binding: UserBinding,
+    ) -> Any: ...
+
+    def append_transcript(
+        self,
+        user_binding: UserBinding,
+        session_id: str,
+        record: dict[str, Any],
+    ) -> Any: ...
 
 
 class ContextManagerPort(Protocol):
