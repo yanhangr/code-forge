@@ -1,0 +1,19 @@
+{
+  "mode": "mapped_departments",
+  "scope_departments": {
+    "replace-with-runtime-scope-A": "A",
+    "replace-with-runtime-scope-B": "B"
+  },
+  "departments": {
+    "A": {
+      "host": "impala.example.invalid",
+      "user": "replace-with-account-1",
+      "password_env": "FORGE_IMPALA_A_PASSWORD"
+    },
+    "B": {
+      "host": "impala.example.invalid",
+      "user": "replace-with-account-2",
+      "password_env": "FORGE_IMPALA_B_PASSWORD"
+    }
+  }
+}

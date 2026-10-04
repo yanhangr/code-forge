@@ -513,7 +513,13 @@
       "planned_test": "tests/integration/test_flow_03.py::test_b23",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaSQLTests.test_reject_writes_nested_writes_multiple_statements_and_functions",
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_model_cannot_choose_account_department_or_options",
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_multi_department_mapping_has_no_default_fallback",
+        "tests/test_impala_tools.py::ImpalaHarnessTests.test_authorization_port_can_deny_tool_without_dispatch"
+      ]
     },
     {
       "case_id": "TC-B24",
@@ -536,7 +542,10 @@
       "planned_test": "tests/integration/test_flow_03.py::test_b24",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaHarnessTests.test_acceptance_snapshot_sqlite_files_and_duplicate_call_reuse"
+      ]
     },
     {
       "case_id": "TC-B25",
@@ -558,7 +567,10 @@
       "planned_test": "tests/integration/test_flow_03.py::test_b25",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaHarnessTests.test_acceptance_snapshot_sqlite_files_and_duplicate_call_reuse"
+      ]
     },
     {
       "case_id": "TC-B26",
@@ -603,7 +615,10 @@
       "planned_test": "tests/integration/test_flow_03.py::test_b27",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_wrong_effective_account_fails_before_business_query"
+      ]
     },
     {
       "case_id": "TC-B28",
@@ -649,7 +664,11 @@
       "planned_test": "tests/integration/test_flow_03.py::test_b29",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaHarnessTests.test_unknown_dispatch_is_not_replayed",
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_restarted_pending_query_is_unknown_without_resubmission"
+      ]
     },
     {
       "case_id": "TC-B30",
@@ -671,7 +690,11 @@
       "planned_test": "tests/integration/test_flow_03.py::test_b30",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_bytes_cells_and_wide_metadata_are_bounded",
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_hourly_budget_crosses_message_boundaries_and_restart"
+      ]
     },
     {
       "case_id": "TC-B31",
@@ -783,7 +806,11 @@
         "tests/test_core.py::StateTests.test_cancel_idempotent_and_not_success",
         "tests/test_transport_user_binding.py::PlatformApiTransportTests.test_cancel_message_is_public_and_idempotent"
       ],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaHarnessTests.test_message_cancel_is_confirmed_in_remote_and_runtime",
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_cancel_failure_is_unknown_and_sanitized"
+      ]
     },
     {
       "case_id": "TC-B36",
@@ -805,7 +832,10 @@
       "planned_test": "tests/integration/test_flow_05.py::test_b36",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaAdapterTests.test_deadline_cancels_query"
+      ]
     },
     {
       "case_id": "TC-B37",
@@ -923,7 +953,10 @@
       "planned_test": "tests/integration/test_flow_07.py::test_b41",
       "status": "SPEC_ONLY",
       "core_evidence": [],
-      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。"
+      "evidence_note": "核心测试只覆盖部分规则；完整流程集成用例尚未实现或执行。",
+      "adapter_evidence": [
+        "tests/test_impala_tools.py::ImpalaHTTPTests.test_http_sse_langgraph_and_user_root_projection"
+      ]
     },
     {
       "case_id": "TC-B42",

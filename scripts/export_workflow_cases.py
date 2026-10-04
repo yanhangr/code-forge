@@ -42,6 +42,17 @@ def render(registry: dict) -> str:
             for ref in case["core_evidence"]:
                 file, selector = ref.split("::", 1)
                 lines.append(f"- [{selector}](../../{file})")
+        if case.get("adapter_evidence"):
+            lines.extend(
+                [
+                    "",
+                    "已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：",
+                    "",
+                ]
+            )
+            for ref in case["adapter_evidence"]:
+                file, selector = ref.split("::", 1)
+                lines.append(f"- [{selector}](../../{file})")
     return "\n".join(lines).rstrip() + "\n"
 
 

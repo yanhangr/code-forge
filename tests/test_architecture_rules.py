@@ -109,7 +109,7 @@ class ArchitectureRulesTests(unittest.TestCase):
             for field in ("given", "when", "then"):
                 self.assertTrue(case[field], (case["case_id"], field))
             self.assertTrue(case["planned_test"].startswith("tests/integration/"))
-            for evidence in case["core_evidence"]:
+            for evidence in [*case["core_evidence"], *case.get("adapter_evidence", [])]:
                 filename, selector = evidence.split("::")
                 cls_name, method = selector.split(".")
                 tree = ast.parse((ROOT / filename).read_text())

@@ -1,5 +1,22 @@
 # 架构核心验证记录
 
+## 2026-10-04：可选 Impala 原生工具
+
+本轮范围为 A 部门共用 LDAP 账号 1 的工具适配器与后续部门映射配置；未配置实际集群地址/凭据，不默认启用或连接示例数据源。
+
+| 验证 | 结果 | 边界 |
+| --- | --- | --- |
+| 全量单元/适配/契约测试 | 97 项通过，约 7.7 秒 | 新增 30 项 Impala 测试；包括既有 Python/Bash、Session/Message、迁移和契约回归 |
+| Impala SQL/身份/额度/取消 | 30 项新测试中覆盖 | SQLGlot 真实 AST；HS2/LDAP/Ranger 行为使用替身；验证拒绝写入/账号参数、分部门映射、结果截断、跨 Message 小时预算、并发、停用、超时、取消与 UNKNOWN 不重放 |
+| Impyla API | 固定 0.23.0 的真实 RPC/游标对象离线检查通过 | 单次尝试需 retries=1；arraysize 控制只读 buffersize；没有真实网络认证 |
+| 框架/传输/存储 | Local 与真实 LangGraph 工具循环、localhost HTTP/SSE、SQLite 和 User Root 结果/transcript 通过 | 模型和数仓为确定性替身，不能称真实模型自主查询或真实 Impala 连接成功 |
+| 生成物与静态检查 | 两个导出脚本、Ruff check/format、git diff --check 通过 | 无新增公开字段、状态、事件或数据库表；测试注册表只增加部分适配证据，原完整流程状态仍 SPEC_ONLY |
+| 真实集群与生产安全 | 未验证 | TLS/LDAP/Ranger、真实查询选项/资源池/远端取消、生产认证/沙箱和多副本限流需要另验 |
+
+命令：`PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v`；执行环境为 Python 3.12.0 / macOS arm64。测试日志保存在本机 `/tmp/code-forge-impala-tests.log`，使用随机临时库和无秘密替身。驱动/解析器及传递依赖固定在 `requirements-impala.lock`。接入配置与使用见 [Impala 工具](impala-tools.md)。
+
+## 2026-09-14：既有架构基线
+
 日期：2026-09-14。验证对象为架构核心、本地 Runtime、SQLite schema v4、Platform Session/Message 动作型接口、Session 级 SSE 游标、用户默认/显式多 Skill 路径和最小 Platform。
 
 | 验证 | 结果 | 能力边界 |

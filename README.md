@@ -72,6 +72,8 @@ Runtime API 是 `http://127.0.0.1:8000`，页面是 `http://127.0.0.1:8001`。�
 
 插件选择与替换边界见 [Runtime 插件架构](docs/plugin-architecture.md)。可通过 `FORGE_STORE`、`FORGE_EXECUTION`、`FORGE_CONTEXT`、`FORGE_MODEL`、`FORGE_HARNESS` 等环境变量切换实现。
 
+可选 [Impala 工具](docs/impala-tools.md) 通过 `FORGE_IMPALA_CONFIG` 启用：按部门绑定 LDAP 账号，提供找表、表结构、EXPLAIN、受限查询、状态和取消，复用现有工具轨迹。当前 A 部门共用账号 1，预留按 scope 映射 A/B 部门；真实集群连接和生产多用户认证/隔离尚未验证。
+
 ## 当前实现边界
 
 已有核心代码、架构文档、标准库 HTTP/SSE 服务、SQLite schema v4、手工 Skill 快照、LocalProcessBackend、确定性本地 Harness、后台 Worker 和最小 Platform。Platform 只使用 Session/Message 动作型接口；Runtime 以用户 `config/skills` 为默认 Skill 根、按 Message 接受显式多路径覆盖，并以项目路径作为 Agent 固定执行根，在 Workspace 级 lease 内发布文件修订。绑定模式下同时维护 `sessions/<session_id>/session.json`、JSONL transcript 和 `tool-output/<session_id>/<run_id>/`。工具实际代码随 `tool.prepared`、输出分片随 `tool.output` 事件实时推送，Platform 无需轮询工具明细接口。公开事件使用 Session 级序号，不暴露内部 Run ID。

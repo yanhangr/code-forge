@@ -40,3 +40,7 @@ FORGE_CONTEXT=my-context
 ```
 
 替换上下文管理器不会改变 Session、Run、事件、SQLite/PostgreSQL 或 Platform HTTP/SSE 契约。
+
+## 可选 Impala 工具
+
+`FORGE_IMPALA_CONFIG` 指定服务端部门配置文件，组合根注入共享 `ImpalaToolDispatcher` 到 Local/LangGraph Harness，并用 `ImpalaSnapshotResolver` 装饰现有 Skill Resolver，在接受时固定非秘密绑定摘要和工具名。核心不依赖 Impyla/SQLGlot；未配置时保持原行为。部门认证/查询预算/故障边界及示例见 [Impala 接入](impala-tools.md)。

@@ -68,6 +68,9 @@ class AgentRuntime:
 
     def stop_worker(self) -> None:
         self._stop.set()
+        dispatcher = getattr(self.harness, "impala_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.tools.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
 

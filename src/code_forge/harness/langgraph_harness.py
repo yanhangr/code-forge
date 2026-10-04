@@ -62,6 +62,7 @@ class LangGraphHarness:
         context_manager: ConversationContextManager | None = None,
         worker_id: str = "worker-1",
         max_tool_steps: int = 12,
+        impala_dispatcher: Any | None = None,
     ):
         self.store = store
         self.execution = execution
@@ -71,6 +72,7 @@ class LangGraphHarness:
         self.context_manager = context_manager or ConversationContextManager()
         self.worker_id = worker_id
         self.max_tool_steps = max_tool_steps
+        self.impala_dispatcher = impala_dispatcher
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -139,6 +141,8 @@ class LangGraphHarness:
             return self.store.get_run(scope_id, run_id)  # type: ignore[return-value]
 
         current = self.store.get_run(scope_id, run_id)
+        if current and current["status"] == RunStatus.CANCELLED.value:
+            return current
         if not current or current["status"] != RunStatus.CANCELLING.value:
             return self.store.transition_run(
                 scope_id,
@@ -211,7 +215,7 @@ class LangGraphHarness:
             message: dict[str, Any] | None = None
             async for event in self.model_adapter.complete_stream(
                 state["messages"],
-                tools=self._tool_specs(),
+                tools=self._tool_specs(state["run"]),
             ):
                 if event["type"] == "content":
                     self.store.append_event(
@@ -241,7 +245,7 @@ class LangGraphHarness:
             return {"messages": [dict(message)]}
         message = await self.model_adapter.complete(
             state["messages"],
-            tools=self._tool_specs(),
+            tools=self._tool_specs(state["run"]),
         )
         if message.get("content"):
             self.store.append_event(
@@ -263,7 +267,9 @@ class LangGraphHarness:
                 {
                     "role": "tool",
                     "tool_call_id": call.get("id"),
-                    "content": content[:16000],
+                    "content": content
+                    if (call.get("function") or {}).get("name", "").startswith("impala_")
+                    else content[:16000],
                 }
             )
         return {"messages": tool_messages}
@@ -273,9 +279,8 @@ class LangGraphHarness:
         last = state["messages"][-1]
         return "tools" if last.get("tool_calls") else "finish"
 
-    @staticmethod
-    def _tool_specs() -> list[dict[str, Any]]:
-        return [
+    def _tool_specs(self, run: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        specs = [
             {
                 "type": "function",
                 "function": {
@@ -317,6 +322,9 @@ class LangGraphHarness:
                 },
             },
         ]
+        if self.impala_dispatcher is not None and run is not None:
+            specs.extend(self.impala_dispatcher.tools.specs(run))
+        return specs
 
     async def _execute_tool_call(self, state: dict[str, Any], call: dict[str, Any]) -> str:
         run = state["run"]
@@ -328,6 +336,27 @@ class LangGraphHarness:
         actor = state["actor"]
         function = call.get("function") or {}
         tool_name = function.get("name", "")
+        current = self.store.get_run(run["scope_id"], run["id"])
+        if current is None or current["status"] != RunStatus.RUNNING.value:
+            raise DomainError(ErrorCode.STATE_CONFLICT, "Message is no longer executing")
+        if tool_name.startswith("impala_") and self.impala_dispatcher is not None:
+            result = await self.impala_dispatcher.execute(
+                run,
+                attempt_id,
+                call,
+                actor,
+                user_binding,
+            )
+            if result.get("status") == "UNKNOWN" and tool_name not in {
+                "impala_query_status",
+                "impala_cancel_query",
+            }:
+                raise DomainError(
+                    ErrorCode.EXECUTION_FAILED, "Impala remote state unknown; verify before retry"
+                )
+            if result.get("status") == "CANCELLED":
+                raise DomainError(ErrorCode.STATE_CONFLICT, "Impala query cancelled")
+            return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         try:
             arguments = json.loads(function.get("arguments") or "{}")
         except json.JSONDecodeError:
@@ -379,7 +408,10 @@ class LangGraphHarness:
         if not code.strip():
             return "Tool arguments are empty"
         current = self.store.get_run(run["scope_id"], run["id"])
-        if not current or current["status"] == RunStatus.CANCELLING.value:
+        if not current or current["status"] in {
+            RunStatus.CANCELLING.value,
+            RunStatus.CANCELLED.value,
+        }:
             return "Run was cancelled"
         logical_key = f"{tool_ref}:{attempt_id}:{uuid4().hex}"
         params_digest = hashlib.sha256((tool_ref + "\0" + code).encode("utf-8")).hexdigest()
@@ -549,7 +581,10 @@ class LangGraphHarness:
         message: str,
     ) -> None:
         current = self.store.get_run(scope_id, run_id)
-        if not current or current["status"] == RunStatus.CANCELLING.value:
+        if not current or current["status"] in {
+            RunStatus.CANCELLING.value,
+            RunStatus.CANCELLED.value,
+        }:
             return
         self.store.transition_run(
             scope_id,

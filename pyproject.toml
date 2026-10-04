@@ -11,6 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 langgraph = ["langgraph>=1.2,<2"]
+impala = ["impyla==0.23.0", "sqlglot==28.0.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

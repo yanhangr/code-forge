@@ -140,6 +140,7 @@ def _local_harness(
     resolver: SnapshotResolver,
     model_adapter: ModelAdapterPort | None,
     max_tool_steps: int,
+    impala_dispatcher: Any | None = None,
     **_: Any,
 ) -> Any:
     from code_forge.harness.local import LocalDeterministicHarness
@@ -152,6 +153,7 @@ def _local_harness(
         model_adapter=model_adapter,
         resolver=resolver,
         max_tool_steps=max_tool_steps,
+        impala_dispatcher=impala_dispatcher,
     )
 
 
@@ -164,6 +166,7 @@ def _langgraph_harness(
     context_manager: ContextManagerPort,
     model_adapter: ModelAdapterPort | None,
     max_tool_steps: int,
+    impala_dispatcher: Any | None = None,
     **_: Any,
 ) -> Any:
     if model_adapter is None:
@@ -190,6 +193,7 @@ def _langgraph_harness(
         context_manager=context_manager,
         max_tool_steps=max_tool_steps,
         worker_id="worker-1",
+        impala_dispatcher=impala_dispatcher,
     )
 
 
@@ -273,6 +277,35 @@ def build_plugins(
             env=env,
         )
 
+    impala_dispatcher = None
+    if env.get("FORGE_IMPALA_CONFIG"):
+        try:
+            import impala.dbapi  # noqa: F401
+            import sqlglot  # noqa: F401
+        except ImportError as exc:
+            raise DomainError(
+                ErrorCode.DEPENDENCY_UNAVAILABLE,
+                "Impala dependencies unavailable; install `pip install -e '.[impala]'`",
+            ) from exc
+        from code_forge.harness.impala_tools import ImpalaToolDispatcher
+        from code_forge.integrations.impala.config import DepartmentBindings
+        from code_forge.integrations.impala.service import ImpalaSnapshotResolver, ImpalaTools
+
+        config_path = Path(env["FORGE_IMPALA_CONFIG"]).expanduser()
+        if not config_path.is_absolute():
+            config_path = root / config_path
+        bindings = DepartmentBindings(config_path)
+        bindings.resolve("default")  # Validate before advertising tools or starting the worker.
+        impala_tools = ImpalaTools(bindings, root / "impala", env)
+        resolver = ImpalaSnapshotResolver(resolver, impala_tools)
+        impala_dispatcher = ImpalaToolDispatcher(
+            impala_tools,
+            store,
+            workspace,
+            root / "operations",
+            authorization,
+        )
+
     harness_name = env.get("FORGE_HARNESS")
     if not harness_name:
         harness_name = "langgraph" if model_adapter is not None else "local"
@@ -286,6 +319,7 @@ def build_plugins(
         context_manager=context_manager,
         model_adapter=model_adapter,
         max_tool_steps=int(env.get("FORGE_MAX_TOOL_STEPS", "12")),
+        impala_dispatcher=impala_dispatcher,
         env=env,
     )
     return RuntimePlugins(

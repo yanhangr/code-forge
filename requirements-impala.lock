@@ -1,0 +1,9 @@
+# Optional Impala adapter environment verified on Python 3.12.0 / macOS arm64.
+# Install with: .venv/bin/python -m pip install -r requirements-impala.lock
+impyla==0.23.0
+sqlglot==28.0.0
+bitarray==3.11.0
+thrift==0.16.0
+thrift-sasl==0.4.3
+pure-sasl==0.6.2
+six==1.17.0

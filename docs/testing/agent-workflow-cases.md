@@ -527,6 +527,13 @@
 
 计划自动化位置：`tests/integration/test_flow_03.py::test_b23`（尚未建立）。
 
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaSQLTests.test_reject_writes_nested_writes_multiple_statements_and_functions](../../tests/test_impala_tools.py)
+- [ImpalaAdapterTests.test_model_cannot_choose_account_department_or_options](../../tests/test_impala_tools.py)
+- [ImpalaAdapterTests.test_multi_department_mapping_has_no_default_fallback](../../tests/test_impala_tools.py)
+- [ImpalaHarnessTests.test_authorization_port_can_deny_tool_without_dispatch](../../tests/test_impala_tools.py)
+
 ## TC-B24：已存在操作查回
 
 对应分支：F03 / B24；验证级别：L1+L2；状态：SPEC_ONLY。
@@ -548,6 +555,10 @@
 
 计划自动化位置：`tests/integration/test_flow_03.py::test_b24`（尚未建立）。
 
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaHarnessTests.test_acceptance_snapshot_sqlite_files_and_duplicate_call_reuse](../../tests/test_impala_tools.py)
+
 ## TC-B25：同调用槽参数冲突
 
 对应分支：F03 / B25；验证级别：L1；状态：SPEC_ONLY。
@@ -567,6 +578,10 @@
 - 不以覆盖输入方式执行新效果
 
 计划自动化位置：`tests/integration/test_flow_03.py::test_b25`（尚未建立）。
+
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaHarnessTests.test_acceptance_snapshot_sqlite_files_and_duplicate_call_reuse](../../tests/test_impala_tools.py)
 
 ## TC-B26：Python 正常执行并落盘
 
@@ -608,6 +623,10 @@
 - 修复后的测试证据对应当前修订
 
 计划自动化位置：`tests/integration/test_flow_03.py::test_b27`（尚未建立）。
+
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaAdapterTests.test_wrong_effective_account_fails_before_business_query](../../tests/test_impala_tools.py)
 
 ## TC-B28：长外部工具挂起恢复
 
@@ -651,6 +670,11 @@
 
 计划自动化位置：`tests/integration/test_flow_03.py::test_b29`（尚未建立）。
 
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaHarnessTests.test_unknown_dispatch_is_not_replayed](../../tests/test_impala_tools.py)
+- [ImpalaAdapterTests.test_restarted_pending_query_is_unknown_without_resubmission](../../tests/test_impala_tools.py)
+
 ## TC-B30：输出溢出与存储失败
 
 对应分支：F03 / B30；验证级别：L1；状态：SPEC_ONLY。
@@ -670,6 +694,11 @@
 - 存储失败不确认成功或提前发完成事件
 
 计划自动化位置：`tests/integration/test_flow_03.py::test_b30`（尚未建立）。
+
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaAdapterTests.test_bytes_cells_and_wide_metadata_are_bounded](../../tests/test_impala_tools.py)
+- [ImpalaAdapterTests.test_hourly_budget_crosses_message_boundaries_and_restart](../../tests/test_impala_tools.py)
 
 ## TC-B31：证据充分的完成
 
@@ -774,6 +803,11 @@
 - [StateTests.test_cancel_idempotent_and_not_success](../../tests/test_core.py)
 - [PlatformApiTransportTests.test_cancel_message_is_public_and_idempotent](../../tests/test_transport_user_binding.py)
 
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaHarnessTests.test_message_cancel_is_confirmed_in_remote_and_runtime](../../tests/test_impala_tools.py)
+- [ImpalaAdapterTests.test_cancel_failure_is_unknown_and_sanitized](../../tests/test_impala_tools.py)
+
 ## TC-B36：超时与未知进程优先核验
 
 对应分支：F05 / B36；验证级别：L1；状态：SPEC_ONLY。
@@ -793,6 +827,10 @@
 - 已有取消按 CANCELLED 收尾
 
 计划自动化位置：`tests/integration/test_flow_05.py::test_b36`（尚未建立）。
+
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaAdapterTests.test_deadline_cancels_query](../../tests/test_impala_tools.py)
 
 ## TC-B37：有效新回应恢复
 
@@ -904,6 +942,10 @@
 - Run不中止
 
 计划自动化位置：`tests/integration/test_flow_07.py::test_b41`（尚未建立）。
+
+已存在的部分适配/框架证据（确定性模型与 HS2 替身，不代表真实 Impala/LDAP/Ranger 通过）：
+
+- [ImpalaHTTPTests.test_http_sse_langgraph_and_user_root_projection](../../tests/test_impala_tools.py)
 
 ## TC-B42：错误事件游标
 

@@ -1,0 +1,41 @@
+{
+  "mode": "trusted_single_department",
+  "default_department": "A",
+  "departments": {
+    "A": {
+      "enabled": true,
+      "host": "impala.example.invalid",
+      "port": 21050,
+      "database": "default",
+      "auth_mechanism": "LDAP",
+      "user": "replace-with-account-1",
+      "password_env": "FORGE_IMPALA_A_PASSWORD",
+      "ca_cert": "",
+      "request_pool": "",
+      "policy": {
+        "default_rows": 100,
+        "max_rows": 1000,
+        "max_bytes": 32000,
+        "cell_bytes": 2048,
+        "max_columns": 100,
+        "timeout_seconds": 60,
+        "rpc_timeout_seconds": 5,
+        "mem_limit_mb": 1024,
+        "scan_bytes_limit_mb": 10240,
+        "max_user_concurrency": 1,
+        "max_department_concurrency": 4,
+        "max_queries_per_message": 12,
+        "max_rows_per_message": 5000,
+        "max_bytes_per_message": 256000,
+        "max_queries_per_user_hour": 120,
+        "max_rows_per_user_hour": 20000,
+        "max_bytes_per_user_hour": 1024000,
+        "max_queries_per_department_hour": 600,
+        "max_rows_per_department_hour": 100000,
+        "max_bytes_per_department_hour": 5120000,
+        "required_filters": {},
+        "allowed_udfs": []
+      }
+    }
+  }
+}

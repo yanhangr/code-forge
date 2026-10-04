@@ -48,6 +48,7 @@ class LocalDeterministicHarness:
         model_adapter: Any | None = None,
         resolver: Any | None = None,
         max_tool_steps: int = 12,
+        impala_dispatcher: Any | None = None,
     ):
         self.store = store
         self.execution = execution
@@ -56,6 +57,7 @@ class LocalDeterministicHarness:
         self.model_adapter = model_adapter
         self.resolver = resolver
         self.max_tool_steps = max_tool_steps
+        self.impala_dispatcher = impala_dispatcher
 
     async def execute(self, claimed: dict[str, Any]) -> dict[str, Any]:
         run = claimed["run"]
@@ -217,6 +219,8 @@ class LocalDeterministicHarness:
             actor,
         )
         current = self.store.get_run(scope_id, run_id)
+        if current and current["status"] == RunStatus.CANCELLED.value:
+            return current
         if not current or current["status"] != RunStatus.CANCELLING.value:
             return self.store.transition_run(
                 scope_id,
@@ -248,9 +252,12 @@ class LocalDeterministicHarness:
             {"role": "user", "content": run["input"]},
         ]
         for _ in range(self.max_tool_steps):
+            current = self.store.get_run(run["scope_id"], run["id"])
+            if current is None or current["status"] != RunStatus.RUNNING.value:
+                return "Message is no longer executing.", TaskOutcome.BLOCKED
             message = await self.model_adapter.complete(
                 messages,
-                tools=self._tool_specs(),
+                tools=self._tool_specs(run),
             )
             tool_calls = message.get("tool_calls")
             if not tool_calls:
@@ -268,6 +275,26 @@ class LocalDeterministicHarness:
                     status = ToolStatus.FAILED
                     stdout_text = ""
                     stderr_text = skill_error
+                elif tool_name.startswith("impala_") and self.impala_dispatcher is not None:
+                    result = await self.impala_dispatcher.execute(
+                        run,
+                        attempt_id,
+                        call,
+                        actor,
+                        user_binding,
+                    )
+                    content = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                    messages.append(
+                        {"role": "tool", "tool_call_id": call.get("id"), "content": content}
+                    )
+                    if result.get("status") == "UNKNOWN" and tool_name not in {
+                        "impala_query_status",
+                        "impala_cancel_query",
+                    }:
+                        return content, TaskOutcome.BLOCKED
+                    if result.get("status") == "CANCELLED":
+                        return content, TaskOutcome.BLOCKED
+                    continue
                 elif tool_name == "execute_python":
                     code = arguments.get("code", "")
                     status, stdout_text, stderr_text = await self._execute_model_code_tool(
@@ -318,9 +345,8 @@ class LocalDeterministicHarness:
                 )
         return "达到最大工具调用步数。", TaskOutcome.PARTIAL
 
-    @staticmethod
-    def _tool_specs() -> list[dict[str, Any]]:
-        return [
+    def _tool_specs(self, run: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        specs = [
             {
                 "type": "function",
                 "function": {
@@ -362,6 +388,9 @@ class LocalDeterministicHarness:
                 },
             },
         ]
+        if self.impala_dispatcher is not None and run is not None:
+            specs.extend(self.impala_dispatcher.tools.specs(run))
+        return specs
 
     async def _execute_model_code_tool(
         self,
